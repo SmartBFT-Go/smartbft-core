@@ -7,11 +7,11 @@ package types
 
 import (
 	"crypto/sha256"
-	"encoding/asn1"
 	"encoding/hex"
 	"fmt"
 	"sync"
 
+	"github.com/SmartBFT-Go/canonical"
 	"github.com/hyperledger-labs/SmartBFT/smartbftprotos"
 )
 
@@ -48,11 +48,13 @@ func (r *RequestInfo) String() string {
 }
 
 func (p Proposal) Digest() string {
-	rawBytes, err := asn1.Marshal(Proposal{
-		VerificationSequence: p.VerificationSequence,
-		Metadata:             p.Metadata,
+	// Marshal cannot fail over this field set, so the panic is unreachable; the
+	// signature is kept because Digest is called from too many places to change.
+	rawBytes, err := canonical.MarshalProposalV0(canonical.ProposalV0{
 		Payload:              p.Payload,
 		Header:               p.Header,
+		Metadata:             p.Metadata,
+		VerificationSequence: p.VerificationSequence,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("failed marshaling proposal: %v", err))
