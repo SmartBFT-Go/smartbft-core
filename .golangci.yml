@@ -1,0 +1,35 @@
+---
+version: "2"
+
+# The fork predates this config, so `default: none` with an explicit list keeps
+# the gate meaningful without a large backlog of pre-existing findings.
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - depguard
+    - bidichk
+  settings:
+    depguard:
+      rules:
+        # pkg/types is migrated onto canonical, so asn1 is denied there and the
+        # deny rule is what proves the migration stays done. The remaining call
+        # sites in internal/bft, test and examples are tracked, not migrated.
+        canonical-encoding:
+          list-mode: lax
+          files:
+            - "**/pkg/types/*.go"
+          deny:
+            - pkg: "encoding/asn1$"
+              desc: "hash via canonical, never asn1 directly"
+            - pkg: "google.golang.org/protobuf"
+              desc: "proto.Marshal output is not stable; hash via canonical"
+            - pkg: "encoding/json$"
+              desc: "encode via canonical, never json"
+
+issues:
+  # Only gate new work; the fork's existing code is out of scope for this pass.
+  new-from-merge-base: main
