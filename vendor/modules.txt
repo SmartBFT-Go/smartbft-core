@@ -1,4 +1,4 @@
-# github.com/SmartBFT-Go/canonical v0.1.0
+# github.com/SmartBFT-Go/canonical v0.2.0
 ## explicit; go 1.26.3
 github.com/SmartBFT-Go/canonical
 # github.com/davecgh/go-spew v1.1.1

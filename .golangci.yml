@@ -15,13 +15,14 @@ linters:
   settings:
     depguard:
       rules:
-        # pkg/types is migrated onto canonical, so asn1 is denied there and the
-        # deny rule is what proves the migration stays done. The remaining call
-        # sites in internal/bft, test and examples are tracked, not migrated.
+        # Production code is migrated onto canonical, so asn1 is denied across
+        # pkg and internal and the rule is what keeps it that way. test/ and
+        # examples/ encode their own fixtures with asn1 and are out of scope.
         canonical-encoding:
           list-mode: lax
           files:
-            - "**/pkg/types/*.go"
+            - "**/pkg/**/*.go"
+            - "**/internal/**/*.go"
           deny:
             - pkg: "encoding/asn1$"
               desc: "hash via canonical, never asn1 directly"

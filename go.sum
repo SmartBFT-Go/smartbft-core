@@ -1,5 +1,5 @@
-github.com/SmartBFT-Go/canonical v0.1.0 h1:n2T2tE1E2ZmiSXE77ZV7J+RZZRWt1feh99TzmuHVgWA=
-github.com/SmartBFT-Go/canonical v0.1.0/go.mod h1:mNN4DzbbSHGjO0owlB8VU6iE1TTOALbdqmgDEUPJ4Wg=
+github.com/SmartBFT-Go/canonical v0.2.0 h1:7qwtLipe3XPO4+Af8GoWMyxrKRU6BxFuNjAaIooDagc=
+github.com/SmartBFT-Go/canonical v0.2.0/go.mod h1:mNN4DzbbSHGjO0owlB8VU6iE1TTOALbdqmgDEUPJ4Wg=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

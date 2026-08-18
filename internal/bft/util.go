@@ -8,7 +8,6 @@ package bft
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/asn1"
 	"encoding/base64"
 	"fmt"
 	"math"
@@ -16,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/SmartBFT-Go/canonical"
 	"github.com/SmartBFT-Go/smartbft-core/pkg/api"
 	"github.com/SmartBFT-Go/smartbft-core/pkg/types"
 	protos "github.com/SmartBFT-Go/smartbft-core/smartbftprotos"
@@ -544,17 +544,16 @@ func CommitSignaturesDigest(sigs []*protos.Signature) []byte {
 	if len(sigs) == 0 {
 		return nil
 	}
-	idb := IntDoubleBytes{}
+	set := canonical.SignatureSetV0{Sigs: make([]canonical.SignerSigV0, 0, len(sigs))}
 	for _, sig := range sigs {
-		s := IntDoubleByte{
-			A: int64(sig.Signer),
-			B: sig.Value,
-			C: sig.Msg,
-		}
-		idb.A = append(idb.A, s)
+		set.Sigs = append(set.Sigs, canonical.SignerSigV0{
+			Signer: int64(sig.Signer),
+			Value:  sig.Value,
+			Msg:    sig.Msg,
+		})
 	}
 
-	serializedSignatures, err := asn1.Marshal(idb)
+	serializedSignatures, err := canonical.MarshalSignatureSetV0(set)
 	if err != nil {
 		panic(fmt.Sprintf("failed serializing signatures: %v", err))
 	}
@@ -562,13 +561,4 @@ func CommitSignaturesDigest(sigs []*protos.Signature) []byte {
 	h := sha256.New()
 	h.Write(serializedSignatures)
 	return h.Sum(nil)
-}
-
-type IntDoubleByte struct {
-	A    int64
-	B, C []byte
-}
-
-type IntDoubleBytes struct {
-	A []IntDoubleByte
 }
