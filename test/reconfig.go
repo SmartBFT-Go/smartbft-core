@@ -3,7 +3,7 @@ package test
 import (
 	"time"
 
-	"github.com/hyperledger-labs/SmartBFT/pkg/types"
+	"github.com/SmartBFT-Go/smartbft-core/pkg/types"
 )
 
 type Configuration struct {

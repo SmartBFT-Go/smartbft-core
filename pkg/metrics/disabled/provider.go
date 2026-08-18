@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package disabled
 
 import (
-	bft "github.com/hyperledger-labs/SmartBFT/pkg/metrics"
+	bft "github.com/SmartBFT-Go/smartbft-core/pkg/metrics"
 )
 
 type Provider struct{}

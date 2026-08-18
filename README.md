@@ -1,5 +1,15 @@
 # Byzantine Fault-Tolerant Replicated State Machine Library
 
+> **Fork notice.** This is a fork of
+> [hyperledger-labs/SmartBFT](https://github.com/hyperledger-labs/SmartBFT), re-pathed as
+> `github.com/SmartBFT-Go/smartbft-core` so downstream modules can depend on it without a
+> `replace` directive. It carries changes required by a Byzantine-fault-tolerant key/value
+> store: proposal digests are produced by
+> [canonical](https://github.com/SmartBFT-Go/canonical) rather than by calling
+> `encoding/asn1` directly, and CI adds lint and determinism gates. The wire encoding is
+> unchanged. Upstream remains the reference for the protocol itself.
+
+
 
 
 This is a Byzantine fault-tolerant (BFT) state machine replication (SMR) library. 

@@ -16,9 +16,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/hyperledger-labs/SmartBFT/pkg/api"
-	"github.com/hyperledger-labs/SmartBFT/pkg/types"
-	protos "github.com/hyperledger-labs/SmartBFT/smartbftprotos"
+	"github.com/SmartBFT-Go/smartbft-core/pkg/api"
+	"github.com/SmartBFT-Go/smartbft-core/pkg/types"
+	protos "github.com/SmartBFT-Go/smartbft-core/smartbftprotos"
 	"google.golang.org/protobuf/proto"
 )
 

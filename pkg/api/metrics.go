@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/hyperledger-labs/SmartBFT/pkg/metrics"
+	"github.com/SmartBFT-Go/smartbft-core/pkg/metrics"
 )
 
 const (

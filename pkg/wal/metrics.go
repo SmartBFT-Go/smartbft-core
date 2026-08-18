@@ -1,8 +1,8 @@
 package wal
 
 import (
-	"github.com/hyperledger-labs/SmartBFT/pkg/api"
-	"github.com/hyperledger-labs/SmartBFT/pkg/metrics"
+	"github.com/SmartBFT-Go/smartbft-core/pkg/api"
+	"github.com/SmartBFT-Go/smartbft-core/pkg/metrics"
 )
 
 var countOfFilesOpts = metrics.GaugeOpts{

@@ -11,7 +11,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/hyperledger-labs/SmartBFT/smartbftprotos"
+	"github.com/SmartBFT-Go/smartbft-core/smartbftprotos"
 	"google.golang.org/protobuf/proto"
 )
 

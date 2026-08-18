@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hyperledger-labs/SmartBFT/internal/bft"
-	"github.com/hyperledger-labs/SmartBFT/internal/bft/mocks"
-	"github.com/hyperledger-labs/SmartBFT/pkg/types"
+	"github.com/SmartBFT-Go/smartbft-core/internal/bft"
+	"github.com/SmartBFT-Go/smartbft-core/internal/bft/mocks"
+	"github.com/SmartBFT-Go/smartbft-core/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/zap"
