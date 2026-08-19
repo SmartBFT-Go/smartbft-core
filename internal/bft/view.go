@@ -474,6 +474,7 @@ func (v *View) processPrepares() Phase {
 		Ids: voterIDs,
 	}
 
+	// determinism:allow signed and relayed verbatim as auxiliary data, never re-marshaled
 	prpFromRaw, err := proto.Marshal(prpFrom)
 	if err != nil {
 		v.Logger.Panicf("Failed marshaling prepares from: %v", err)

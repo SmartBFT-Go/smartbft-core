@@ -43,6 +43,7 @@ func (ps *PersistedState) Save(msgToSave *protos.SavedMessage) error {
 		ps.storePrepared(prepared)
 	}
 
+	// determinism:allow WAL bytes are decoded on read, never compared byte-wise
 	b, err := proto.Marshal(msgToSave)
 	if err != nil {
 		ps.Logger.Panicf("Failed marshaling message: %v", err)

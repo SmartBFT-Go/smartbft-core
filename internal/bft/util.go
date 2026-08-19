@@ -62,6 +62,7 @@ func proposalSequence(m *protos.Message) uint64 {
 
 // MarshalOrPanic marshals or panics when an error occurs
 func MarshalOrPanic(msg proto.Message) []byte {
+	// determinism:allow callers transmit or sign these bytes verbatim; none re-marshals to compare
 	b, err := proto.Marshal(msg)
 	if err != nil {
 		panic(err)

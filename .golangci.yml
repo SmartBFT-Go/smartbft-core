@@ -26,8 +26,6 @@ linters:
           deny:
             - pkg: "encoding/asn1$"
               desc: "hash via canonical, never asn1 directly"
-            - pkg: "google.golang.org/protobuf"
-              desc: "proto.Marshal output is not stable; hash via canonical"
             - pkg: "encoding/json$"
               desc: "encode via canonical, never json"
 

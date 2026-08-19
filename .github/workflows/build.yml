@@ -66,6 +66,17 @@ jobs:
         with:
           version: v2.12.2
 
+      # depguard cannot tell a legitimate protobuf import from one whose output
+      # is hashed; this analyzer resolves calls through the type checker.
+      # Built from a pinned checkout: the module proxy and checksum database
+      # both lag on nested-module tags, and CI should not wait on them.
+      - name: determinism analyzer
+        run: |
+          git clone --depth 1 --branch lint/v0.3.0 \
+            https://github.com/SmartBFT-Go/canonical.git /tmp/canonical
+          (cd /tmp/canonical/lint && go build -o /tmp/detcheck ./cmd/detcheck)
+          go vet -vettool=/tmp/detcheck ./...
+
       - name: go fmt
         run: |
           go fmt ./...
