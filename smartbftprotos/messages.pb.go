@@ -40,7 +40,9 @@ type Message struct {
 	//	*Message_HeartBeatResponse
 	//	*Message_StateTransferRequest
 	//	*Message_StateTransferResponse
-	Content       isMessage_Content `protobuf_oneof:"content"`
+	Content isMessage_Content `protobuf_oneof:"content"`
+	// W3C TraceContext carrier. Untrusted hint: never influences protocol behaviour.
+	TraceContext  map[string]string `protobuf:"bytes,11,rep,name=trace_context,json=traceContext,proto3" json:"trace_context,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -168,6 +170,13 @@ func (x *Message) GetStateTransferResponse() *StateTransferResponse {
 		if x, ok := x.Content.(*Message_StateTransferResponse); ok {
 			return x.StateTransferResponse
 		}
+	}
+	return nil
+}
+
+func (x *Message) GetTraceContext() map[string]string {
+	if x != nil {
+		return x.TraceContext
 	}
 	return nil
 }
@@ -1282,7 +1291,7 @@ var File_smartbftprotos_messages_proto protoreflect.FileDescriptor
 
 const file_smartbftprotos_messages_proto_rawDesc = "" +
 	"\n" +
-	"\x1dsmartbftprotos/messages.proto\x12\x0esmartbftprotos\"\xbe\x05\n" +
+	"\x1dsmartbftprotos/messages.proto\x12\x0esmartbftprotos\"\xcf\x06\n" +
 	"\aMessage\x12=\n" +
 	"\vpre_prepare\x18\x01 \x01(\v2\x1a.smartbftprotos.PrePrepareH\x00R\n" +
 	"prePrepare\x123\n" +
@@ -1297,7 +1306,11 @@ const file_smartbftprotos_messages_proto_rawDesc = "" +
 	"\x13heart_beat_response\x18\b \x01(\v2!.smartbftprotos.HeartBeatResponseH\x00R\x11heartBeatResponse\x12\\\n" +
 	"\x16state_transfer_request\x18\t \x01(\v2$.smartbftprotos.StateTransferRequestH\x00R\x14stateTransferRequest\x12_\n" +
 	"\x17state_transfer_response\x18\n" +
-	" \x01(\v2%.smartbftprotos.StateTransferResponseH\x00R\x15stateTransferResponseB\t\n" +
+	" \x01(\v2%.smartbftprotos.StateTransferResponseH\x00R\x15stateTransferResponse\x12N\n" +
+	"\rtrace_context\x18\v \x03(\v2).smartbftprotos.Message.TraceContextEntryR\ftraceContext\x1a?\n" +
+	"\x11TraceContextEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\t\n" +
 	"\acontent\"\xb9\x01\n" +
 	"\n" +
 	"PrePrepare\x12\x12\n" +
@@ -1383,7 +1396,7 @@ func file_smartbftprotos_messages_proto_rawDescGZIP() []byte {
 	return file_smartbftprotos_messages_proto_rawDescData
 }
 
-var file_smartbftprotos_messages_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_smartbftprotos_messages_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_smartbftprotos_messages_proto_goTypes = []any{
 	(*Message)(nil),               // 0: smartbftprotos.Message
 	(*PrePrepare)(nil),            // 1: smartbftprotos.PrePrepare
@@ -1403,6 +1416,7 @@ var file_smartbftprotos_messages_proto_goTypes = []any{
 	(*SavedMessage)(nil),          // 15: smartbftprotos.SavedMessage
 	(*StateTransferRequest)(nil),  // 16: smartbftprotos.StateTransferRequest
 	(*StateTransferResponse)(nil), // 17: smartbftprotos.StateTransferResponse
+	nil,                           // 18: smartbftprotos.Message.TraceContextEntry
 }
 var file_smartbftprotos_messages_proto_depIdxs = []int32{
 	1,  // 0: smartbftprotos.Message.pre_prepare:type_name -> smartbftprotos.PrePrepare
@@ -1415,24 +1429,25 @@ var file_smartbftprotos_messages_proto_depIdxs = []int32{
 	11, // 7: smartbftprotos.Message.heart_beat_response:type_name -> smartbftprotos.HeartBeatResponse
 	16, // 8: smartbftprotos.Message.state_transfer_request:type_name -> smartbftprotos.StateTransferRequest
 	17, // 9: smartbftprotos.Message.state_transfer_response:type_name -> smartbftprotos.StateTransferResponse
-	13, // 10: smartbftprotos.PrePrepare.proposal:type_name -> smartbftprotos.Proposal
-	12, // 11: smartbftprotos.PrePrepare.prev_commit_signatures:type_name -> smartbftprotos.Signature
-	1,  // 12: smartbftprotos.ProposedRecord.pre_prepare:type_name -> smartbftprotos.PrePrepare
-	2,  // 13: smartbftprotos.ProposedRecord.prepare:type_name -> smartbftprotos.Prepare
-	12, // 14: smartbftprotos.Commit.signature:type_name -> smartbftprotos.Signature
-	13, // 15: smartbftprotos.ViewData.last_decision:type_name -> smartbftprotos.Proposal
-	12, // 16: smartbftprotos.ViewData.last_decision_signatures:type_name -> smartbftprotos.Signature
-	13, // 17: smartbftprotos.ViewData.in_flight_proposal:type_name -> smartbftprotos.Proposal
-	8,  // 18: smartbftprotos.NewView.signed_view_data:type_name -> smartbftprotos.SignedViewData
-	3,  // 19: smartbftprotos.SavedMessage.proposed_record:type_name -> smartbftprotos.ProposedRecord
-	0,  // 20: smartbftprotos.SavedMessage.commit:type_name -> smartbftprotos.Message
-	14, // 21: smartbftprotos.SavedMessage.new_view:type_name -> smartbftprotos.ViewMetadata
-	6,  // 22: smartbftprotos.SavedMessage.view_change:type_name -> smartbftprotos.ViewChange
-	23, // [23:23] is the sub-list for method output_type
-	23, // [23:23] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	18, // 10: smartbftprotos.Message.trace_context:type_name -> smartbftprotos.Message.TraceContextEntry
+	13, // 11: smartbftprotos.PrePrepare.proposal:type_name -> smartbftprotos.Proposal
+	12, // 12: smartbftprotos.PrePrepare.prev_commit_signatures:type_name -> smartbftprotos.Signature
+	1,  // 13: smartbftprotos.ProposedRecord.pre_prepare:type_name -> smartbftprotos.PrePrepare
+	2,  // 14: smartbftprotos.ProposedRecord.prepare:type_name -> smartbftprotos.Prepare
+	12, // 15: smartbftprotos.Commit.signature:type_name -> smartbftprotos.Signature
+	13, // 16: smartbftprotos.ViewData.last_decision:type_name -> smartbftprotos.Proposal
+	12, // 17: smartbftprotos.ViewData.last_decision_signatures:type_name -> smartbftprotos.Signature
+	13, // 18: smartbftprotos.ViewData.in_flight_proposal:type_name -> smartbftprotos.Proposal
+	8,  // 19: smartbftprotos.NewView.signed_view_data:type_name -> smartbftprotos.SignedViewData
+	3,  // 20: smartbftprotos.SavedMessage.proposed_record:type_name -> smartbftprotos.ProposedRecord
+	0,  // 21: smartbftprotos.SavedMessage.commit:type_name -> smartbftprotos.Message
+	14, // 22: smartbftprotos.SavedMessage.new_view:type_name -> smartbftprotos.ViewMetadata
+	6,  // 23: smartbftprotos.SavedMessage.view_change:type_name -> smartbftprotos.ViewChange
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_smartbftprotos_messages_proto_init() }
@@ -1464,7 +1479,7 @@ func file_smartbftprotos_messages_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_smartbftprotos_messages_proto_rawDesc), len(file_smartbftprotos_messages_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

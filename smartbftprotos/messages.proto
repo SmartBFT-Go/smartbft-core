@@ -24,6 +24,9 @@ message Message {
         StateTransferRequest state_transfer_request = 9;
         StateTransferResponse state_transfer_response = 10;
     }
+
+    // W3C TraceContext carrier. Untrusted hint: never influences protocol behaviour.
+    map<string, string> trace_context = 11;
 }
 
 message PrePrepare {
