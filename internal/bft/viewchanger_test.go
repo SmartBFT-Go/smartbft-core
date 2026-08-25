@@ -2364,3 +2364,124 @@ func TestInFlightProposalAlreadySyncedPast(t *testing.T) {
 	app.AssertNotCalled(t, "Deliver", mock.Anything, mock.Anything)
 	assert.Equal(t, 1, logs.FilterMessageSnippet("past the in flight proposal").Len())
 }
+
+func TestStopWhileWaitingForTicksBeforeInFlightView(t *testing.T) {
+	// The debug line the view changer emits before the two ticks is the synchronisation point.
+	core, logs := observer.New(zapcore.DebugLevel)
+	log := zap.New(core).Sugar()
+
+	comm := &mocks.CommMock{}
+	comm.On("BroadcastConsensus", mock.Anything)
+	signer := &mocks.SignerMock{}
+	signer.On("Sign", mock.Anything).Return([]byte{1, 2, 3})
+	signer.On("SignProposal", mock.Anything, mock.Anything).Return(&types.Signature{
+		ID:    3,
+		Value: []byte{4},
+	})
+	verifier := &mocks.VerifierMock{}
+	verifier.On("VerifySignature", mock.Anything).Return(nil)
+	verifier.On("VerifyConsenterSig", mock.Anything, mock.Anything).Return(nil, nil)
+	controller := &mocks.ViewController{}
+	controller.On("ViewChanged", mock.Anything, mock.Anything).Return(nil)
+	controller.On("AbortView", mock.Anything)
+	reqTimer := &mocks.RequestsTimer{}
+	reqTimer.On("StopTimers")
+	reqTimer.On("RestartTimers")
+	app := &mocks.ApplicationMock{}
+	app.On("Deliver", mock.Anything, mock.Anything).Return(types.Reconfig{})
+	pruner := &mocks.Pruner{}
+	pruner.On("MaybePruneRevokedRequests")
+	state := &mocks.State{}
+	state.On("Save", mock.Anything).Return(nil)
+
+	checkpoint := types.Checkpoint{}
+	checkpoint.Set(lastDecision, lastDecisionSignatures)
+
+	vc := &bft.ViewChanger{
+		SelfID:           3,
+		N:                4,
+		NodesList:        []uint64{0, 1, 2, 3},
+		Comm:             comm,
+		Logger:           log,
+		Verifier:         verifier,
+		Controller:       controller,
+		Signer:           signer,
+		RequestsTimer:    reqTimer,
+		Ticker:           make(chan time.Time), // nothing ever ticks
+		InFlight:         &bft.InFlightData{},
+		Checkpoint:       &checkpoint,
+		ViewSequences:    &atomic.Value{},
+		State:            state,
+		InMsqQSize:       int(types.DefaultConfig.IncomingMessageBufferSize),
+		Application:      app,
+		Pruner:           pruner,
+		MetricsBlacklist: api.NewMetricsBlacklist(&disabled.Provider{}),
+		MetricsView:      api.NewMetricsView(&disabled.Provider{}),
+	}
+
+	inFlightProposal := types.Proposal{
+		Payload: []byte{1},
+		Header:  []byte{2},
+		Metadata: bft.MarshalOrPanic(&protos.ViewMetadata{
+			LatestSequence: 2,
+			ViewId:         0,
+		}),
+		VerificationSequence: 1,
+	}
+
+	viewData := proto.Clone(vd).(*protos.ViewData)
+	viewData.InFlightProposal = &protos.Proposal{
+		Payload:              inFlightProposal.Payload,
+		Header:               inFlightProposal.Header,
+		Metadata:             inFlightProposal.Metadata,
+		VerificationSequence: uint64(inFlightProposal.VerificationSequence),
+	}
+	viewData.InFlightPrepared = true
+
+	rawViewData := bft.MarshalOrPanic(viewData)
+
+	signed := make([]*protos.SignedViewData, 0)
+	for len(signed) < 3 { // quorum = 3
+		msg := &protos.Message{
+			Content: &protos.Message_ViewData{
+				ViewData: &protos.SignedViewData{
+					RawViewData: rawViewData,
+					Signer:      uint64(len(signed)),
+					Signature:   nil,
+				},
+			},
+		}
+		signed = append(signed, msg.GetViewData())
+	}
+
+	msg := &protos.Message{
+		Content: &protos.Message_NewView{
+			NewView: &protos.NewView{
+				SignedViewData: signed,
+			},
+		},
+	}
+
+	vc.Start(1)
+
+	vc.HandleMessage(1, msg)
+
+	assert.Eventually(t, func() bool {
+		return logs.FilterMessageSnippet("Waiting two ticks").Len() > 0
+	}, time.Minute, 10*time.Millisecond)
+
+	stopped := make(chan struct{})
+	go func() {
+		vc.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Stop did not return while the view changer was waiting for ticks")
+	}
+
+	assert.Equal(t, 1, logs.FilterMessageSnippet("View changer was instructed to stop").Len())
+	app.AssertNotCalled(t, "Deliver", mock.Anything, mock.Anything)
+}

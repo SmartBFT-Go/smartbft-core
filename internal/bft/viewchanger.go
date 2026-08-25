@@ -1278,8 +1278,15 @@ func (v *ViewChanger) commitInFlightProposal(proposal *protos.Proposal) (success
 	}
 
 	v.Logger.Debugf("Waiting two ticks before starting in-flight view")
-	<-v.Ticker
-	<-v.Ticker
+	for range 2 {
+		select {
+		case <-v.Ticker:
+		case <-v.stopChan:
+			v.inFlightViewLock.Unlock() // the view has not been started yet, so there is nothing to abort
+			v.Logger.Infof("View changer was instructed to stop")
+			return false
+		}
+	}
 
 	inFlightView.Start()
 	defer inFlightView.Abort()
