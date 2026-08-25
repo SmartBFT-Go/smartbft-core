@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -2263,4 +2264,103 @@ func TestDontCommitInFlight(t *testing.T) {
 	vc.Stop()
 
 	app.AssertNotCalled(t, "Deliver")
+}
+
+func TestInFlightProposalAlreadySyncedPast(t *testing.T) {
+	// The observer core is what lets the assertions name the branch that ran.
+	core, logs := observer.New(zapcore.InfoLevel)
+	log := zap.New(core).Sugar()
+
+	verifier := &mocks.VerifierMock{}
+	verifier.On("VerifySignature", mock.Anything).Return(nil)
+	verifier.On("VerifyConsenterSig", mock.Anything, mock.Anything).Return(nil, nil)
+	controller := &mocks.ViewController{}
+	controller.On("ViewChanged", mock.Anything, mock.Anything).Return(nil)
+	reqTimer := &mocks.RequestsTimer{}
+	reqTimer.On("RestartTimers")
+	app := &mocks.ApplicationMock{}
+	app.On("Deliver", mock.Anything, mock.Anything).Return(types.Reconfig{})
+	state := &mocks.State{}
+	state.On("Save", mock.Anything).Return(nil)
+
+	vc := &bft.ViewChanger{
+		SelfID:        3,
+		N:             4,
+		NodesList:     []uint64{0, 1, 2, 3},
+		Logger:        log,
+		Verifier:      verifier,
+		Controller:    controller,
+		Ticker:        make(chan time.Time),
+		RequestsTimer: reqTimer,
+		Application:   app,
+		State:         state,
+	}
+
+	inFlightProposal := types.Proposal{
+		Payload: []byte{1},
+		Header:  []byte{2},
+		Metadata: bft.MarshalOrPanic(&protos.ViewMetadata{
+			LatestSequence: 2,
+			ViewId:         0,
+		}),
+		VerificationSequence: 1,
+	}
+
+	viewData := proto.Clone(vd).(*protos.ViewData)
+	viewData.InFlightProposal = &protos.Proposal{
+		Payload:              inFlightProposal.Payload,
+		Header:               inFlightProposal.Header,
+		Metadata:             inFlightProposal.Metadata,
+		VerificationSequence: uint64(inFlightProposal.VerificationSequence),
+	}
+	viewData.InFlightPrepared = true
+
+	vdBytes := bft.MarshalOrPanic(viewData)
+
+	signed := make([]*protos.SignedViewData, 0)
+	for len(signed) < 3 { // quorum = 3
+		msg := &protos.Message{
+			Content: &protos.Message_ViewData{
+				ViewData: &protos.SignedViewData{
+					RawViewData: vdBytes,
+					Signer:      uint64(len(signed)),
+					Signature:   nil,
+				},
+			},
+		}
+		signed = append(signed, msg.GetViewData())
+	}
+
+	msg := &protos.Message{
+		Content: &protos.Message_NewView{
+			NewView: &protos.NewView{
+				SignedViewData: signed,
+			},
+		},
+	}
+
+	// This node state-transferred to sequence 5, past the in flight proposal at sequence 2.
+	ahead := types.Proposal{
+		Header:               []byte{0},
+		Payload:              []byte{1},
+		Metadata:             bft.MarshalOrPanic(&protos.ViewMetadata{LatestSequence: 5, ViewId: 0}),
+		VerificationSequence: 1,
+	}
+	checkpoint := types.Checkpoint{}
+	checkpoint.Set(ahead, lastDecisionSignatures)
+	vc.Checkpoint = &checkpoint
+
+	vc.Start(1)
+
+	vc.HandleMessage(1, msg)
+
+	assert.Eventually(t, func() bool {
+		return logs.FilterMessageSnippet("past the in flight proposal").Len() > 0
+	}, time.Minute, 10*time.Millisecond)
+
+	vc.Stop()
+
+	controller.AssertNotCalled(t, "ViewChanged", mock.Anything, mock.Anything)
+	app.AssertNotCalled(t, "Deliver", mock.Anything, mock.Anything)
+	assert.Equal(t, 1, logs.FilterMessageSnippet("past the in flight proposal").Len())
 }
