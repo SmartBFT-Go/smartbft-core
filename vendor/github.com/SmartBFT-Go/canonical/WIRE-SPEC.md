@@ -137,8 +137,8 @@ Annotated breakdown of vector `proposal/v0/smartbft-reference`:
    02 01 07                          INTEGER 7                 VerificationSequence
 ```
 
-3.2.1 **`ProposalV0` has no `Version` field.** It is the single allowlisted exception to §4.1. The
-structure mirrors an encoding that already shipped in SmartBFT; adding a `Version` field would
+3.2.1 **`ProposalV0` has no `Version` field.** It is an allowlisted exception to §4.1, which lists
+them all. The structure mirrors an encoding that already shipped in SmartBFT; adding a `Version` field would
 change every digest the consensus library has ever produced. The `V0` in the name is the version
 tag, carried out of band.
 
@@ -168,12 +168,160 @@ values above 2^63-1 at construction. They are all far below that bound in practi
 plain INTEGER on the wire and avoids the arbitrary-precision encoding a true unsigned 64-bit
 value would need.
 
+### 3.6 `GenesisV1`
+
+The pinned cluster definition. Its digest is §3.4's default — `SHA-256` over the complete DER —
+and that digest is the value an operator distributes out of band for every node to check its own
+copy against. The encoding is therefore frozen on the same terms as §3.1.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Version` | INTEGER | MUST equal 1 for v1. §4.1 applies. |
+| 2 | `TrustDomain` | OCTET STRING | The SPIFFE trust domain, e.g. `cluster.example`. MUST be non-empty. |
+| 3 | `CARoot` | OCTET STRING | DER of the root certificate. Opaque to this layer. |
+| 4 | `MaxNodes` | INTEGER | 64-bit signed. MUST be ≥ 0, and MUST be ≥ the number of members. |
+| 5 | `Members` | SEQUENCE OF `GenesisMemberV1` | Sorted strictly ascending by `NodeID`. |
+
+`GenesisMemberV1`, the element type of `Members`:
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `NodeID` | INTEGER | 64-bit signed, logically unsigned per §3.5. MUST be ≥ 0. |
+| 2 | `SpiffeID` | OCTET STRING | MUST equal `spiffe://<TrustDomain>/node/<NodeID>` byte for byte, with this structure's `TrustDomain` and the member's own `NodeID` in decimal without leading zeros. See §3.6.6. |
+| 3 | `LeafPubKey` | OCTET STRING | MUST be exactly 32 bytes: an Ed25519 public key. |
+
+Annotated breakdown of vector `genesis/v1/long-form-length`:
+
+```
+30 81 cc                              SEQUENCE, 204 bytes — long form: 81 says one length byte follows
+   02 01 01                           INTEGER 1                Version
+   04 0f 636c…6c65                    OCTET STRING, 15 bytes   TrustDomain "cluster.example"
+   04 20 ca*32                        OCTET STRING, 32 bytes   CARoot
+   02 01 0a                           INTEGER 10               MaxNodes
+   30 81 90                           SEQUENCE OF, 144 bytes   Members — two members already cross 127
+      30 46                           SEQUENCE, 70 bytes       Members[0]
+         02 01 01                     INTEGER 1                NodeID
+         04 1f 7370…2f31              OCTET STRING, 31 bytes   SpiffeID "spiffe://cluster.example/node/1"
+         04 20 b2*32                  OCTET STRING, 32 bytes   LeafPubKey
+      30 46                           SEQUENCE, 70 bytes       Members[1]
+         02 01 02                     INTEGER 2                NodeID
+         04 1f 7370…2f32              OCTET STRING, 31 bytes   SpiffeID "spiffe://cluster.example/node/2"
+         04 20 c3*32                  OCTET STRING, 32 bytes   LeafPubKey
+```
+
+3.6.1 **`GenesisMemberV1` has no `Version` field.** It is an element of `Members` and never
+appears on the wire alone, so §4.1 — which binds top-level structures — is satisfied by the
+`Version` of the containing `GenesisV1`. A change to the member layout produces a new version of
+`GenesisV1`, not a version field on the member.
+
+3.6.2 `Members` is a SEQUENCE OF under §2.2, so **the producer sorts and the producer alone**. A
+conformant encoder MUST reject an unsorted or duplicated set rather than sort it, and a decoder
+MUST reject one too. Sorting on behalf of the caller would give one membership two spellings, and
+only one of them hashes to the digest the operator pinned.
+
+3.6.3 Every constraint in the two tables is checked on encode **and** on decode. The asymmetric
+alternative — validate on the way out, trust on the way in — accepts bytes this specification says
+cannot exist, and those bytes have digests of their own.
+
+3.6.4 An empty `Members` encodes as `30 00`. Per §2.6 there is no way to distinguish it from an
+absent one, and none is needed: a cluster with no members is expressible and is pinned by vector
+`genesis/v1/no-members`.
+
+3.6.5 `MaxNodes` is the cluster's reconfiguration ceiling, not its current size. It is carried in
+genesis because it bounds the member count at every later reconfiguration, and a bound that is not
+covered by the pinned digest is a bound an operator can move.
+
+3.6.6 `SpiffeID` is **derived, not merely shaped**. Both of its variable parts are fields of this
+same structure, so each member has exactly one legal identity: an implementation computes the
+value and compares, rather than parsing whatever it was handed. Accepting a member whose
+`SpiffeID` names a different node or a foreign trust domain would put two identities for one node
+under the pinned digest, and the identity is what the leaf certificate is later checked against.
+`CARoot` is the only cell in either table with no constraint on its content — §3.6's table calls it
+opaque, this layer does not interpret certificates, and it stays exempt.
+
+### 3.7 `SignatureSetV0`
+
+The commit signatures of the previous decision, hashed into
+`ViewMetadata.PrevCommitSignatureDigest`. The digest is §3.4's default — `SHA-256` over the
+complete DER — and every replica recomputes it over the signatures it received from the leader
+and compares. These bytes have been in ledgers since before this document existed; §3.7.3 says
+what that means.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Sigs` | SEQUENCE OF `SignerSigV0` | Producer order, **not** sorted. See §3.7.4. |
+
+`SignerSigV0`, the element type of `Sigs`:
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Signer` | INTEGER | 64-bit signed, logically unsigned per §3.5. The node identifier. |
+| 2 | `Value` | OCTET STRING | The signature bytes. Opaque to this layer, and may be empty. |
+| 3 | `Msg` | OCTET STRING | The auxiliary message the signature covers. Opaque, and may be empty. |
+
+Annotated breakdown of vector `sigset/v0/three-signers`:
+
+```
+30 26                       SEQUENCE, 38 bytes
+   30 24                    SEQUENCE OF, 36 bytes    Sigs
+      30 0b                 SEQUENCE, 11 bytes       Sigs[0]
+         02 01 01           INTEGER 1                Signer
+         04 02 56 31        OCTET STRING "V1"        Value
+         04 02 4d 31        OCTET STRING "M1"        Msg
+      30 07                 SEQUENCE, 7 bytes        Sigs[1]
+         02 01 02           INTEGER 2                Signer
+         04 00              OCTET STRING, 0 bytes    Value
+         04 00              OCTET STRING, 0 bytes    Msg
+      30 0c                 SEQUENCE, 12 bytes       Sigs[2]
+         02 02 01 2c        INTEGER 300              Signer
+         04 02 56 33        OCTET STRING "V3"        Value
+         04 02 4d 33        OCTET STRING "M3"        Msg
+```
+
+3.7.1 **Neither structure has a `Version` field.** Both are allowlisted exceptions to §4.1, on the
+same grounds as §3.2.1: they reproduce an encoding SmartBFT already shipped, and adding a
+`Version` field would change every `PrevCommitSignatureDigest` already written to a ledger. The
+`V0` in the name is the version tag, carried out of band. `SignerSigV0` would additionally
+qualify under the §3.6.1 rule — it is an element of a SEQUENCE OF and never appears on the wire
+alone.
+
+3.7.2 Field order is declaration order, inherited from SmartBFT's internal `IntDoubleByte` and
+`IntDoubleBytes`. Those two types are what the pre-migration implementation marshalled, and this
+section is a transcription of their layout, not a redesign of it.
+
+3.7.3 This section and the `sigset/v0/*` vectors are a **documentation backfill**. The encoding
+shipped without them; no byte changes here, so §1.3 does not apply and the release carrying this
+section is additive. The two non-empty vectors record digests produced by the unmodified
+pre-migration implementation for those inputs, which is why they can be checked against something
+other than this package's own output.
+
+3.7.4 `Sigs` is a SEQUENCE OF but is **not** sorted, so it does not meet §2.2's sort requirement.
+The order is the producer's, it is carried alongside the signatures themselves, and the verifier
+recomputes the digest over the list in the order it received it — the same signatures in another
+order are a different digest. Recorded as an exception, not defended as a design: a v1 structure
+carrying the same data would sort by `Signer` and reject duplicates.
+
+3.7.5 An empty `Sigs` encodes as `30 02 30 00` and is pinned by vector `sigset/v0/empty`. SmartBFT
+returns a nil digest for an empty signature set without reaching the encoder, so those bytes are
+not hashed in practice; the vector exists so that an implementer does not have to guess.
+
 ## 4. The two rules
 
 ### 4.1 V-RULE
 
 **Every top-level structure begins with `Version`, and every decoder MUST reject a version it
-does not know.** `ProposalV0` (§3.2.1) is the single exception.
+does not know.** The exceptions are exhaustively:
+
+| Structure | Why | Where |
+|---|---|---|
+| `ProposalV0` | Inherits SmartBFT's frozen proposal encoding | §3.2.1 |
+| `SignatureSetV0` | Inherits SmartBFT's frozen commit-signature encoding | §3.7.1 |
+| `SignerSigV0` | Element of `SignatureSetV0`; same frozen encoding | §3.7.1 |
+| `GenesisMemberV1` | Element of `GenesisV1`; the container's `Version` governs the layout | §3.6.1 |
+
+The list is mirrored by `versionExempt` in `profile_test.go`, which fails the build for any
+exported structure not on it. Adding a row is a deliberate act with a recorded reason, and a new
+structure that fits neither category above does not get one.
 
 Attack prevented: a DER decoder that maps a SEQUENCE onto a fixed field list **silently discards
 trailing elements it was not expecting**. A v2 structure `{Root, Seq, Extra}` handed to a v1
@@ -198,11 +346,31 @@ the digest.
 
 An implementation MUST treat leftover bytes as a decode error, not as a warning.
 
+4.2.1 **The same rule binds inside the structure, at every nesting depth.** Bytes left after the
+outer SEQUENCE are only the outermost case of one malleability. A decoder that maps a SEQUENCE
+onto a fixed field list stops when the list runs out and reports *no* leftovers, because the
+surplus element sat inside that SEQUENCE's own length: `30 2e … 02 01 63` decodes to the same
+`Header` as `30 2b …`, hashes differently, and hands nothing back to the caller to complain
+about. The rule is therefore stated on the whole encoding: **an accepted input MUST be the exact
+byte string this specification encodes that value to.** Any other byte string decoding to the same
+value MUST be rejected, whichever SEQUENCE it hides in. The profile of §2 is what makes this
+statable — one value has one encoding — and the cheapest implementation of it is to re-encode
+what was just decoded and require the result to equal the input.
+
+4.2.2 This is a conformance requirement, not a Go implementation detail. An implementation that
+accepts a spliced encoding reproduces every vector in the annex and still disagrees with this one
+on the *set of accepted inputs*, which is precisely where an attacker works: one authorised value,
+two byte strings, two digests, two nodes that no longer agree. A non-Go implementation is
+conformant only if it rejects the same inputs, and §4.3 says how to derive them.
+
 ### 4.3 Both rules are pinned by the annex
 
 `TestVectorRules` takes each `Header` vector's real bytes, increments the `Version` content byte,
-and requires a version error; then appends `0xff` and requires a trailing-bytes error. A
-conformant implementation SHOULD run the same two derivations over the annex.
+and requires a version error; then appends `0xff` and requires a trailing-bytes error.
+`TestVectorsAreNotMalleable` takes every vector, walks every SEQUENCE at every depth, splices an
+unexpected `02 01 63` into it with the enclosing lengths recomputed, and requires a decode error
+for each — 4 forgeries for a two-member `GenesisV1`, one per SEQUENCE. A conformant implementation
+SHOULD run the same three derivations over the annex; they need no input beyond the file itself.
 
 ## 5. Merkle node hashing
 
