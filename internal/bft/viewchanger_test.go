@@ -2485,3 +2485,36 @@ func TestStopWhileWaitingForTicksBeforeInFlightView(t *testing.T) {
 	assert.Equal(t, 1, logs.FilterMessageSnippet("View changer was instructed to stop").Len())
 	app.AssertNotCalled(t, "Deliver", mock.Anything, mock.Anything)
 }
+
+func TestSyncAfterStop(t *testing.T) {
+	basicLog, err := zap.NewDevelopment()
+	assert.NoError(t, err)
+
+	synchronizer := &mocks.Synchronizer{}
+	synchronizer.On("Sync")
+
+	vc := &bft.ViewChanger{
+		SelfID:       1,
+		N:            4,
+		NodesList:    []uint64{0, 1, 2, 3},
+		Logger:       basicLog.Sugar(),
+		Ticker:       make(chan time.Time),
+		Synchronizer: synchronizer,
+	}
+
+	vc.Start(0)
+	vc.Stop()
+
+	// The in-flight view calls Sync on its own goroutine; once stopped nobody drains inFlightSyncChan.
+	returned := make(chan struct{})
+	go func() {
+		vc.Sync()
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Sync did not return after the view changer was stopped")
+	}
+}

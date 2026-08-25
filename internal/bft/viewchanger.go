@@ -1352,7 +1352,10 @@ func (v *ViewChanger) Sync() {
 	// the in flight proposal view asked to sync
 	v.Logger.Debugf("Node %d is calling sync because the in flight proposal view has asked to sync", v.SelfID)
 	v.Synchronizer.Sync()
-	v.inFlightSyncChan <- struct{}{}
+	select {
+	case v.inFlightSyncChan <- struct{}{}:
+	case <-v.stopChan:
+	}
 }
 
 // HandleViewMessage passes a message to the in flight proposal view if applicable
