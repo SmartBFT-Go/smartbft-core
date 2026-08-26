@@ -17,3 +17,6 @@
 # Build artifacts
 .build
 
+
+# Local review archive: agent transcripts, never published.
+.revmux/
