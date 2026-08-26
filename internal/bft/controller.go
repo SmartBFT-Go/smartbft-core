@@ -552,6 +552,9 @@ func (c *Controller) decide(d decision) {
 	c.removeDeliveredFromPool(d)
 	select {
 	case c.deliverChan <- struct{}{}:
+	case <-d.abortChan:
+		// Decide gave up on this handshake when its view was aborted, so there is
+		// no longer anyone to hand the answer to.
 	case <-c.stopChan:
 		return
 	}
@@ -890,11 +893,16 @@ func (c *Controller) stopped() bool {
 
 // Decide delivers the decision to the application
 func (c *Controller) Decide(proposal types.Proposal, signatures []types.Signature, requests []types.RequestInfo) {
+	// Both halves of the handshake below have to watch the same view: the run loop may
+	// only reach our decision after the view was aborted and replaced.
+	abortChan := c.currentViewAbortChan()
+
 	select {
 	case c.decisionChan <- decision{
 		proposal:   proposal,
 		requests:   requests,
 		signatures: signatures,
+		abortChan:  abortChan,
 	}:
 	case <-c.stopChan:
 		// In case we are in the middle of shutting down,
@@ -905,7 +913,7 @@ func (c *Controller) Decide(proposal types.Proposal, signatures []types.Signatur
 	select {
 	case <-c.deliverChan: // wait for the delivery of the decision to the application
 	case <-c.stopChan: // If we stopped the controller, abort delivery
-	case <-c.currentViewAbortChan(): // If we stopped the view, abort delivery
+	case <-abortChan: // If we stopped the view, abort delivery
 	}
 }
 
@@ -926,6 +934,7 @@ type decision struct {
 	proposal   types.Proposal
 	signatures []types.Signature
 	requests   []types.RequestInfo
+	abortChan  <-chan struct{} // closed when the view that decided it gave up waiting
 }
 
 // BroadcastConsensus broadcasts the message and informs the heartbeat monitor if necessary

@@ -1658,3 +1658,89 @@ func TestViewChangedAfterControllerStopped(t *testing.T) {
 		controller.ViewChanged(3, 2)
 	}), "ViewChanged did not return after the controller was stopped")
 }
+
+func TestAbortViewWhileADecisionIsPending(t *testing.T) {
+	basicLog, err := zap.NewDevelopment()
+	assert.NoError(t, err)
+	log := basicLog.Sugar()
+
+	batcher := &mocks.Batcher{}
+	batcher.On("Close")
+	batcher.On("Closed").Return(false)
+	batcher.On("Reset")
+	pool := &mocks.RequestPool{}
+	pool.On("Close")
+	pool.On("RemoveRequest", mock.Anything).Return(nil)
+	leaderMon := &mocks.LeaderMonitor{}
+	leaderMon.On("ChangeRole", mock.Anything, mock.Anything, mock.Anything)
+	leaderMon.On("Close")
+	comm := &mocks.CommMock{}
+	comm.On("SendConsensus", mock.Anything, mock.Anything)
+	verifier := &mocks.VerifierMock{}
+	verifier.On("VerificationSequence").Return(uint64(1))
+	app := &mocks.ApplicationMock{}
+
+	startedWG := sync.WaitGroup{}
+	startedWG.Add(1)
+
+	controller := &bft.Controller{
+		Checkpoint:    &types.Checkpoint{},
+		Batcher:       batcher,
+		RequestPool:   pool,
+		LeaderMonitor: leaderMon,
+		ID:            1,
+		N:             4,
+		NodesList:     []uint64{1, 2, 3, 4},
+		Logger:        log,
+		Application:   app,
+		Comm:          comm,
+		Verifier:      verifier,
+		StartedWG:     &startedWG,
+	}
+	controller.Deliver = app
+
+	views := make(chan bft.Proposer, 4)
+	pb := &mocks.ProposerBuilder{}
+	vs := &atomic.Value{}
+	pb.On("NewProposer", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(func(a uint64, b uint64, c uint64, d uint64, e int) bft.Proposer {
+			view := createView(controller, a, b, c, d, e, vs)
+			views <- view
+			return view
+		}, bft.Phase(bft.COMMITTED))
+	controller.ProposerBuilder = pb
+
+	decideReturned := make(chan struct{})
+	deliverCalled := make(chan struct{})
+	var deliverOnce sync.Once
+	app.On("Deliver", mock.Anything, mock.Anything).Run(func(mock.Arguments) {
+		deliverOnce.Do(func() {
+			// We are on the controller's run goroutine, between taking the decision off
+			// decisionChan and answering it: abort the view that produced it and let the
+			// decider walk away, so nothing is left to receive the answer.
+			view := <-views
+			view.Abort()
+			<-decideReturned
+			close(deliverCalled)
+		})
+	}).Return(types.Reconfig{})
+
+	controller.Start(1, 0, 0, false)
+	defer controller.Stop()
+
+	go func() {
+		controller.Decide(types.Proposal{}, nil, nil)
+		close(decideReturned)
+	}()
+
+	select {
+	case <-deliverCalled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the decision was never delivered")
+	}
+
+	assert.True(t, returnsWithin(10*time.Second, func() {
+		controller.AbortView(1)
+		controller.AbortView(1)
+	}), "AbortView did not return; the run loop is still stuck answering an abandoned decision")
+}
