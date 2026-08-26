@@ -1573,3 +1573,88 @@ func createNewViewMsgForDeliverTwiceTest(nextView uint64) *protos.Message {
 		},
 	}
 }
+
+// stoppedController returns a started-then-stopped controller, so that nothing
+// drains the channels its Proposer-facing methods write to.
+func stoppedController(t *testing.T) *bft.Controller {
+	t.Helper()
+
+	basicLog, err := zap.NewDevelopment()
+	assert.NoError(t, err)
+	log := basicLog.Sugar()
+
+	app := &mocks.ApplicationMock{}
+	app.On("Deliver", mock.Anything, mock.Anything).Return(types.Reconfig{})
+	batcher := &mocks.Batcher{}
+	batcher.On("Close")
+	pool := &mocks.RequestPool{}
+	pool.On("Close")
+	leaderMon := &mocks.LeaderMonitor{}
+	leaderMon.On("ChangeRole", mock.Anything, mock.Anything, mock.Anything)
+	leaderMon.On("Close")
+	comm := &mocks.CommMock{}
+	comm.On("SendConsensus", mock.Anything, mock.Anything)
+	verifier := &mocks.VerifierMock{}
+	verifier.On("VerificationSequence").Return(uint64(1))
+
+	startedWG := sync.WaitGroup{}
+	startedWG.Add(1)
+
+	controller := &bft.Controller{
+		Checkpoint:    &types.Checkpoint{},
+		Batcher:       batcher,
+		RequestPool:   pool,
+		LeaderMonitor: leaderMon,
+		ID:            1,
+		N:             4,
+		NodesList:     []uint64{1, 2, 3, 4},
+		Logger:        log,
+		Application:   app,
+		Comm:          comm,
+		Verifier:      verifier,
+		StartedWG:     &startedWG,
+	}
+	controller.Deliver = app
+
+	configureProposerBuilder(controller)
+
+	controller.Start(1, 0, 0, false)
+	controller.Stop()
+
+	return controller
+}
+
+// returnsWithin runs f on its own goroutine and reports whether it returned in time.
+// A blocked channel operation would otherwise sit there until the package timeout.
+func returnsWithin(d time.Duration, f func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+func TestAbortViewAfterControllerStopped(t *testing.T) {
+	controller := stoppedController(t)
+
+	// abortViewChan holds one, so only the second send exposes the missing guard.
+	assert.True(t, returnsWithin(10*time.Second, func() {
+		controller.AbortView(1)
+		controller.AbortView(1)
+	}), "AbortView did not return after the controller was stopped")
+}
+
+func TestViewChangedAfterControllerStopped(t *testing.T) {
+	controller := stoppedController(t)
+
+	assert.True(t, returnsWithin(10*time.Second, func() {
+		controller.ViewChanged(2, 1)
+		controller.ViewChanged(3, 2)
+	}), "ViewChanged did not return after the controller was stopped")
+}

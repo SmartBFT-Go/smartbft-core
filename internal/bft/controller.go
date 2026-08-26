@@ -468,7 +468,11 @@ func (c *Controller) AbortView(view uint64) {
 
 	c.Batcher.Close()
 
-	c.abortViewChan <- view
+	select {
+	case c.abortViewChan <- view:
+	case <-c.stopChan:
+		// The run loop is gone, so nobody will ever take this off the channel.
+	}
 }
 
 // ViewChanged makes the controller abort the current view and start a new one with the given numbers
@@ -478,7 +482,11 @@ func (c *Controller) ViewChanged(newViewNumber uint64, newProposalSequence uint6
 	if amILeader {
 		c.Batcher.Close()
 	}
-	c.viewChange <- viewInfo{proposalSeq: newProposalSequence, viewNumber: newViewNumber}
+	select {
+	case c.viewChange <- viewInfo{proposalSeq: newProposalSequence, viewNumber: newViewNumber}:
+	case <-c.stopChan:
+		// The run loop is gone, so nobody will ever take this off the channel.
+	}
 }
 
 func (c *Controller) propose() {
