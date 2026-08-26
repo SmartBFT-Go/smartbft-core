@@ -77,7 +77,11 @@ func (c *Consensus) Deliver(proposal types.Proposal, signatures []types.Signatur
 	reconfig := c.Application.Deliver(proposal, signatures)
 	if reconfig.InLatestDecision {
 		c.Logger.Debugf("Detected a reconfig in deliver")
-		c.reconfigChan <- reconfig
+		select {
+		case c.reconfigChan <- reconfig:
+		case <-c.stopChan:
+			// Consensus is on its way down, so the reconfig has no one left to act on it.
+		}
 	}
 	return reconfig
 }
@@ -88,10 +92,14 @@ func (c *Consensus) Sync() types.SyncResponse {
 	c.Metrics.MetricsConsensus.LatencySync.Observe(time.Since(begin).Seconds())
 	if syncResponse.Reconfig.InReplicatedDecisions {
 		c.Logger.Debugf("Detected a reconfig in sync")
-		c.reconfigChan <- types.Reconfig{
+		select {
+		case c.reconfigChan <- types.Reconfig{
 			InLatestDecision: true,
 			CurrentNodes:     syncResponse.Reconfig.CurrentNodes,
 			CurrentConfig:    syncResponse.Reconfig.CurrentConfig,
+		}:
+		case <-c.stopChan:
+			// Consensus is on its way down, so the reconfig has no one left to act on it.
 		}
 	}
 	return syncResponse
