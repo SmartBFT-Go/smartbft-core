@@ -554,25 +554,19 @@ func (c *Controller) decide(d decision) {
 	}
 	c.Logger.Debugf("Node %d delivered proposal", c.ID)
 	c.removeDeliveredFromPool(d)
+	// Decide stops listening once its view is aborted, so this send can park until stopChan
+	// closes; whether such a decision counts in the current view is still unresolved.
+	select {
+	case c.deliverChan <- struct{}{}:
+	case <-c.stopChan:
+		return
+	}
+	c.incrementCurrentDecisionsInView()
 
 	md := &protos.ViewMetadata{}
 	if err := proto.Unmarshal(d.proposal.Metadata, md); err != nil {
 		c.Logger.Panicf("Failed to unmarshal proposal metadata, error: %v", err)
 	}
-
-	select {
-	case c.deliverChan <- struct{}{}:
-	case <-d.abortChan:
-		// The decision was delivered and checkpointed, so it counts in the view that made it -
-		// unless the controller already moved on, since a later view sets its own counter.
-		if md.ViewId == c.getCurrentViewNumber() {
-			c.incrementCurrentDecisionsInView()
-		}
-		return
-	case <-c.stopChan:
-		return
-	}
-	c.incrementCurrentDecisionsInView()
 
 	if c.checkIfRotate(md.BlackList) {
 		c.Logger.Debugf("Restarting view to rotate the leader")
@@ -902,16 +896,11 @@ func (c *Controller) stopped() bool {
 
 // Decide delivers the decision to the application
 func (c *Controller) Decide(proposal types.Proposal, signatures []types.Signature, requests []types.RequestInfo) {
-	// Both halves of the handshake below have to watch the same view: the run loop may
-	// only reach our decision after the view was aborted and replaced.
-	abortChan := c.currentViewAbortChan()
-
 	select {
 	case c.decisionChan <- decision{
 		proposal:   proposal,
 		requests:   requests,
 		signatures: signatures,
-		abortChan:  abortChan,
 	}:
 	case <-c.stopChan:
 		// In case we are in the middle of shutting down,
@@ -922,7 +911,7 @@ func (c *Controller) Decide(proposal types.Proposal, signatures []types.Signatur
 	select {
 	case <-c.deliverChan: // wait for the delivery of the decision to the application
 	case <-c.stopChan: // If we stopped the controller, abort delivery
-	case <-abortChan: // If we stopped the view, abort delivery
+	case <-c.currentViewAbortChan(): // If we stopped the view, abort delivery
 	}
 }
 
@@ -943,7 +932,6 @@ type decision struct {
 	proposal   types.Proposal
 	signatures []types.Signature
 	requests   []types.RequestInfo
-	abortChan  <-chan struct{} // closed when the view that decided it gave up waiting
 }
 
 // BroadcastConsensus broadcasts the message and informs the heartbeat monitor if necessary
