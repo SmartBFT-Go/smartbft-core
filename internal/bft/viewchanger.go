@@ -1351,7 +1351,8 @@ func (v *ViewChanger) Complain(viewNum uint64, stopView bool) {
 	v.Logger.Panicf("Node %d has complained while in the view for the in flight proposal", v.SelfID)
 }
 
-// Sync calls the synchronizer and informs the view changer of the sync
+// Sync calls the synchronizer and then informs the view changer of the sync, unless the view
+// changer has stopped, in which case nobody is left to be informed.
 func (v *ViewChanger) Sync() {
 	// the in flight proposal view asked to sync
 	v.Logger.Debugf("Node %d is calling sync because the in flight proposal view has asked to sync", v.SelfID)
