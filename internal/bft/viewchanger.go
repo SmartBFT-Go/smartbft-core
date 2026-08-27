@@ -1282,7 +1282,10 @@ func (v *ViewChanger) commitInFlightProposal(proposal *protos.Proposal) (success
 		select {
 		case <-v.Ticker:
 		case <-v.stopChan:
-			v.inFlightViewLock.Unlock() // the view has not been started yet, so there is nothing to abort
+			// The view was published above but never started, so its message channels are
+			// still nil and a HandleViewMessage reaching it would block forever.
+			v.inFlightView = nil
+			v.inFlightViewLock.Unlock() // nothing was started, so there is nothing to abort
 			v.Logger.Infof("View changer was instructed to stop")
 			return false
 		}

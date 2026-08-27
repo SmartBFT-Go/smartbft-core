@@ -2365,7 +2365,9 @@ func TestInFlightProposalAlreadySyncedPast(t *testing.T) {
 	assert.Equal(t, 1, logs.FilterMessageSnippet("past the in flight proposal").Len())
 }
 
-func TestStopWhileWaitingForTicksBeforeInFlightView(t *testing.T) {
+// viewChangerWaitingForTicks returns a view changer parked in the two-tick wait that precedes
+// the start of the in-flight view, along with its log observer and application mock.
+func viewChangerWaitingForTicks(t *testing.T) (*bft.ViewChanger, *observer.ObservedLogs, *mocks.ApplicationMock) {
 	// The debug line the view changer emits before the two ticks is the synchronisation point.
 	core, logs := observer.New(zapcore.DebugLevel)
 	log := zap.New(core).Sugar()
@@ -2470,6 +2472,12 @@ func TestStopWhileWaitingForTicksBeforeInFlightView(t *testing.T) {
 		return logs.FilterMessageSnippet("Waiting two ticks").Len() > 0
 	}, time.Minute, 10*time.Millisecond)
 
+	return vc, logs, app
+}
+
+func TestStopWhileWaitingForTicksBeforeInFlightView(t *testing.T) {
+	vc, logs, app := viewChangerWaitingForTicks(t)
+
 	stopped := make(chan struct{})
 	go func() {
 		vc.Stop()
@@ -2484,6 +2492,31 @@ func TestStopWhileWaitingForTicksBeforeInFlightView(t *testing.T) {
 
 	assert.Equal(t, 1, logs.FilterMessageSnippet("View changer was instructed to stop").Len())
 	app.AssertNotCalled(t, "Deliver", mock.Anything, mock.Anything)
+}
+
+func TestHandleViewMessageAfterStopBeforeInFlightView(t *testing.T) {
+	vc, logs, _ := viewChangerWaitingForTicks(t)
+
+	vc.Stop()
+	assert.Equal(t, 1, logs.FilterMessageSnippet("View changer was instructed to stop").Len())
+
+	// The view the stop branch walked away from was never started, so its message
+	// channels are nil and anything still routed to it would park a goroutine.
+	handled := make(chan struct{})
+	go func() {
+		vc.HandleViewMessage(1, &protos.Message{
+			Content: &protos.Message_Prepare{
+				Prepare: &protos.Prepare{View: 1, Seq: 2},
+			},
+		})
+		close(handled)
+	}()
+
+	select {
+	case <-handled:
+	case <-time.After(20 * time.Second):
+		t.Fatal("HandleViewMessage did not return; the stop branch left a never-started view in place")
+	}
 }
 
 func TestSyncAfterStop(t *testing.T) {
