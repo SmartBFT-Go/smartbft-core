@@ -1784,6 +1784,22 @@ func TestDecisionOfAnAbortedViewDoesNotCountInItsReplacement(t *testing.T) {
 	verifier.On("VerificationSequence").Return(uint64(1))
 	app := &mocks.ApplicationMock{}
 
+	syncCalled := make(chan struct{})
+	var syncOnce sync.Once
+	synchronizer := &mocks.SynchronizerMock{}
+	synchronizer.On("Sync").Run(func(mock.Arguments) {
+		syncOnce.Do(func() { close(syncCalled) })
+	}).Return(types.SyncResponse{})
+
+	collector := bft.StateCollector{
+		SelfID:         1,
+		N:              4,
+		Logger:         log,
+		CollectTimeout: 100 * time.Millisecond,
+	}
+	collector.Start()
+	defer collector.Stop()
+
 	startedWG := sync.WaitGroup{}
 	startedWG.Add(1)
 
@@ -1801,6 +1817,8 @@ func TestDecisionOfAnAbortedViewDoesNotCountInItsReplacement(t *testing.T) {
 		Application:        app,
 		Comm:               comm,
 		Verifier:           verifier,
+		Synchronizer:       synchronizer,
+		Collector:          &collector,
 		StartedWG:          &startedWG,
 	}
 	controller.Deliver = app
@@ -1821,6 +1839,7 @@ func TestDecisionOfAnAbortedViewDoesNotCountInItsReplacement(t *testing.T) {
 			return createView(controller, leader, seq, viewNum, decisions, quorum, vs)
 		}, bft.Phase(bft.COMMITTED))
 	controller.ProposerBuilder = pb
+	controller.ViewSequences = vs
 
 	deliverCalled := make(chan struct{})
 	app.On("Deliver", mock.Anything, mock.Anything).Run(func(mock.Arguments) {
@@ -1859,9 +1878,143 @@ func TestDecisionOfAnAbortedViewDoesNotCountInItsReplacement(t *testing.T) {
 		t.Fatal("the decision was never delivered")
 	}
 
-	// The run loop is sequential, so anything decide does with the stale decision happens
-	// before this view change: the next view started must be view 3 with a fresh counter.
+	// A sync that finds nothing newer restarts the current view with the controller's counter,
+	// which is where a stale count would surface: view 2 is live at zero, so nothing restarts.
+	controller.Sync()
+	select {
+	case <-syncCalled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run loop never reached the synchronizer")
+	}
+
+	// The run loop is sequential and viewChange is buffered, so the sync above is serviced
+	// first: the next view started must be view 3 with a fresh counter, nothing in between.
 	controller.ViewChanged(3, 5)
 	assert.Equal(t, startedView{view: 3, decisions: 0}, nextStartedView(t, started),
 		"decide applied the aborted view's decision count to the view that replaced it")
+}
+
+func TestDecisionOfAViewAbortedInPlaceCountsInThatView(t *testing.T) {
+	basicLog, err := zap.NewDevelopment()
+	assert.NoError(t, err)
+	log := basicLog.Sugar()
+
+	batcher := &mocks.Batcher{}
+	batcher.On("Close")
+	batcher.On("Closed").Return(false)
+	batcher.On("Reset")
+	pool := &mocks.RequestPool{}
+	pool.On("Close")
+	pool.On("RemoveRequest", mock.Anything).Return(nil)
+	leaderMon := &mocks.LeaderMonitor{}
+	leaderMon.On("ChangeRole", mock.Anything, mock.Anything, mock.Anything)
+	leaderMon.On("Close")
+	comm := &mocks.CommMock{}
+	comm.On("SendConsensus", mock.Anything, mock.Anything)
+	verifier := &mocks.VerifierMock{}
+	verifier.On("VerificationSequence").Return(uint64(1))
+	app := &mocks.ApplicationMock{}
+
+	// The synchronizer knows nothing this node does not, which is what sends the run loop
+	// down the branch that restarts the current view with the counter it already holds.
+	synchronizer := &mocks.SynchronizerMock{}
+	synchronizer.On("Sync").Return(types.SyncResponse{})
+
+	collector := bft.StateCollector{
+		SelfID:         1,
+		N:              4,
+		Logger:         log,
+		CollectTimeout: 100 * time.Millisecond,
+	}
+	collector.Start()
+	defer collector.Stop()
+
+	startedWG := sync.WaitGroup{}
+	startedWG.Add(1)
+
+	controller := &bft.Controller{
+		Checkpoint:    &types.Checkpoint{},
+		Batcher:       batcher,
+		RequestPool:   pool,
+		LeaderMonitor: leaderMon,
+		ID:            1,
+		N:             4,
+		NodesList:     []uint64{1, 2, 3, 4},
+		Logger:        log,
+		Application:   app,
+		Comm:          comm,
+		Verifier:      verifier,
+		Synchronizer:  synchronizer,
+		Collector:     &collector,
+		MetricsView:   api.NewMetricsView(&disabled.Provider{}),
+		StartedWG:     &startedWG,
+	}
+	controller.Deliver = &bft.MutuallyExclusiveDeliver{C: controller}
+
+	started := make(chan startedView, 8)
+	views := make(chan bft.Proposer, 8)
+	pb := &mocks.ProposerBuilder{}
+	vs := &atomic.Value{}
+	pb.On("NewProposer", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(func(leader uint64, seq uint64, viewNum uint64, decisions uint64, quorum int) bft.Proposer {
+			view := createView(controller, leader, seq, viewNum, decisions, quorum, vs)
+			started <- startedView{view: viewNum, decisions: decisions}
+			views <- view
+			return view
+		}, bft.Phase(bft.COMMITTED))
+	controller.ProposerBuilder = pb
+	controller.ViewSequences = vs
+
+	deliverCalled := make(chan struct{})
+	app.On("Deliver", mock.Anything, mock.Anything).Run(func(mock.Arguments) {
+		close(deliverCalled)
+	}).Return(types.Reconfig{})
+
+	controller.Start(1, 0, 0, false)
+	defer controller.Stop()
+
+	assert.Equal(t, startedView{view: 1, decisions: 0}, nextStartedView(t, started))
+	view1 := <-views
+
+	// A request timeout makes the view changer abort view 1 on its own, so the view is gone
+	// but nothing replaced it: the controller is still in view 1.
+	controller.AbortView(1)
+	select {
+	case <-view1.AbortChan():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run loop never aborted view 1")
+	}
+
+	decided := make(chan struct{})
+	go func() {
+		controller.Decide(types.Proposal{
+			Metadata:             bft.MarshalOrPanic(&protos.ViewMetadata{ViewId: 1, LatestSequence: 1}),
+			VerificationSequence: 1,
+		}, nil, nil)
+		close(decided)
+	}()
+
+	select {
+	case <-decided:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Decide did not return although the view it decided in was aborted")
+	}
+
+	select {
+	case <-deliverCalled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the decision was never delivered")
+	}
+
+	// Sync finds nothing newer, so the controller restarts view 1 with its own counter. The
+	// decisions it hands the new view are what verifyProposal matches every proposal against.
+	controller.Sync()
+	assert.Equal(t, startedView{view: 1, decisions: 1}, nextStartedView(t, started),
+		"a decision delivered and checkpointed in the aborted view was not counted in it")
+
+	// The restart above orders this after decide, which is what advanced the checkpoint.
+	checkpoint, _ := controller.Checkpoint.Get()
+	md := &protos.ViewMetadata{}
+	assert.NoError(t, proto.Unmarshal(checkpoint.Metadata, md))
+	assert.Equal(t, uint64(1), md.LatestSequence, "the decision was not checkpointed")
 }

@@ -554,21 +554,25 @@ func (c *Controller) decide(d decision) {
 	}
 	c.Logger.Debugf("Node %d delivered proposal", c.ID)
 	c.removeDeliveredFromPool(d)
-	select {
-	case c.deliverChan <- struct{}{}:
-	case <-d.abortChan:
-		// The view that produced this decision is gone, and so is the receiver of the
-		// answer; its bookkeeping belongs to that view, not to the one that replaced it.
-		return
-	case <-c.stopChan:
-		return
-	}
-	c.incrementCurrentDecisionsInView()
 
 	md := &protos.ViewMetadata{}
 	if err := proto.Unmarshal(d.proposal.Metadata, md); err != nil {
 		c.Logger.Panicf("Failed to unmarshal proposal metadata, error: %v", err)
 	}
+
+	select {
+	case c.deliverChan <- struct{}{}:
+	case <-d.abortChan:
+		// The decision was delivered and checkpointed, so it counts in the view that made it -
+		// unless the controller already moved on, since a later view sets its own counter.
+		if md.ViewId == c.getCurrentViewNumber() {
+			c.incrementCurrentDecisionsInView()
+		}
+		return
+	case <-c.stopChan:
+		return
+	}
+	c.incrementCurrentDecisionsInView()
 
 	if c.checkIfRotate(md.BlackList) {
 		c.Logger.Debugf("Restarting view to rotate the leader")
