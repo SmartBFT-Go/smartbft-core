@@ -19,7 +19,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// ViewController controls the view
+// ViewController controls the view. Both methods are best effort: a controller that is
+// closing drops the request.
 //
 //go:generate mockery -dir . -name ViewController -case underscore -output ./mocks/
 type ViewController interface {

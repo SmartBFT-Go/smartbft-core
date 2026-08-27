@@ -462,7 +462,8 @@ func (c *Controller) Sync() {
 	c.grabSyncToken()
 }
 
-// AbortView makes the controller abort the current view
+// AbortView makes the controller abort the current view, unless the controller is closing,
+// in which case the request is dropped.
 func (c *Controller) AbortView(view uint64) {
 	c.Logger.Debugf("AbortView, the current view num is %d", c.getCurrentViewNumber())
 
@@ -476,7 +477,8 @@ func (c *Controller) AbortView(view uint64) {
 	}
 }
 
-// ViewChanged makes the controller abort the current view and start a new one with the given numbers
+// ViewChanged makes the controller abort the current view and start a new one with the given
+// numbers, unless the controller is closing, in which case the request is dropped.
 func (c *Controller) ViewChanged(newViewNumber uint64, newProposalSequence uint64) {
 	c.Logger.Debugf("ViewChanged, the new view is %d", newViewNumber)
 	amILeader, _ := c.iAmTheLeader()
