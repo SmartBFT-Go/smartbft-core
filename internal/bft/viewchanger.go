@@ -1210,7 +1210,8 @@ func (v *ViewChanger) commitInFlightProposal(proposal *protos.Proposal) (success
 		}
 		if lastDecisionMD.LatestSequence > proposalMD.LatestSequence {
 			// Legal: this node state-transferred past the proposal the NewView carries.
-			v.Logger.Infof("Node %d has decided up to sequence %d, past the in flight proposal at sequence %d; there is nothing to commit", v.SelfID, lastDecisionMD.LatestSequence, proposalMD.LatestSequence)
+			// Warn like the sibling branches, since the caller warns about the same event.
+			v.Logger.Warnf("Node %d has decided up to sequence %d, past the in flight proposal at sequence %d; there is nothing to commit", v.SelfID, lastDecisionMD.LatestSequence, proposalMD.LatestSequence)
 			return false
 		}
 		if lastDecisionMD.LatestSequence != proposalMD.LatestSequence-1 {

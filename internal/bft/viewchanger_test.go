@@ -2362,7 +2362,8 @@ func TestInFlightProposalAlreadySyncedPast(t *testing.T) {
 
 	controller.AssertNotCalled(t, "ViewChanged", mock.Anything, mock.Anything)
 	app.AssertNotCalled(t, "Deliver", mock.Anything, mock.Anything)
-	assert.Equal(t, 1, logs.FilterMessageSnippet("past the in flight proposal").Len())
+	// At the same level as the caller's warning about the same event.
+	assert.Equal(t, 1, logs.FilterLevelExact(zapcore.WarnLevel).FilterMessageSnippet("past the in flight proposal").Len())
 }
 
 // viewChangerWaitingForTicks returns a view changer parked in the two-tick wait that precedes
