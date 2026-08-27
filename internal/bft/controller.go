@@ -553,8 +553,9 @@ func (c *Controller) decide(d decision) {
 	select {
 	case c.deliverChan <- struct{}{}:
 	case <-d.abortChan:
-		// Decide gave up on this handshake when its view was aborted, so there is
-		// no longer anyone to hand the answer to.
+		// The view that produced this decision is gone, and so is the receiver of the
+		// answer; its bookkeeping belongs to that view, not to the one that replaced it.
+		return
 	case <-c.stopChan:
 		return
 	}

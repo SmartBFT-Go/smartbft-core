@@ -1744,3 +1744,124 @@ func TestAbortViewWhileADecisionIsPending(t *testing.T) {
 		controller.AbortView(1)
 	}), "AbortView did not return; the run loop is still stuck answering an abandoned decision")
 }
+
+type startedView struct {
+	view      uint64
+	decisions uint64
+}
+
+// nextStartedView returns the next view the controller started, or fails the test.
+func nextStartedView(t *testing.T, started <-chan startedView) startedView {
+	t.Helper()
+	select {
+	case sv := <-started:
+		return sv
+	case <-time.After(10 * time.Second):
+		t.Fatal("the controller did not start another view")
+		return startedView{}
+	}
+}
+
+func TestDecisionOfAnAbortedViewDoesNotCountInItsReplacement(t *testing.T) {
+	basicLog, err := zap.NewDevelopment()
+	assert.NoError(t, err)
+	log := basicLog.Sugar()
+
+	batcher := &mocks.Batcher{}
+	batcher.On("Close")
+	batcher.On("Closed").Return(false)
+	batcher.On("Reset")
+	pool := &mocks.RequestPool{}
+	pool.On("Close")
+	pool.On("RemoveRequest", mock.Anything).Return(nil)
+	pool.On("RestartTimers")
+	leaderMon := &mocks.LeaderMonitor{}
+	leaderMon.On("ChangeRole", mock.Anything, mock.Anything, mock.Anything)
+	leaderMon.On("Close")
+	comm := &mocks.CommMock{}
+	comm.On("SendConsensus", mock.Anything, mock.Anything)
+	verifier := &mocks.VerifierMock{}
+	verifier.On("VerificationSequence").Return(uint64(1))
+	app := &mocks.ApplicationMock{}
+
+	startedWG := sync.WaitGroup{}
+	startedWG.Add(1)
+
+	controller := &bft.Controller{
+		Checkpoint:         &types.Checkpoint{},
+		Batcher:            batcher,
+		RequestPool:        pool,
+		LeaderMonitor:      leaderMon,
+		ID:                 1,
+		N:                  4,
+		NodesList:          []uint64{1, 2, 3, 4},
+		LeaderRotation:     true,
+		DecisionsPerLeader: 1,
+		Logger:             log,
+		Application:        app,
+		Comm:               comm,
+		Verifier:           verifier,
+		StartedWG:          &startedWG,
+	}
+	controller.Deliver = app
+
+	started := make(chan startedView, 8)
+	holdView2 := make(chan struct{})
+	var holdOnce sync.Once
+	pb := &mocks.ProposerBuilder{}
+	vs := &atomic.Value{}
+	pb.On("NewProposer", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(func(leader uint64, seq uint64, viewNum uint64, decisions uint64, quorum int) bft.Proposer {
+			started <- startedView{view: viewNum, decisions: decisions}
+			if viewNum == 2 {
+				// Park the run loop here: view 1 is aborted but not yet replaced, which is
+				// where Decide has to pick up the abort channel for the interleaving below.
+				holdOnce.Do(func() { <-holdView2 })
+			}
+			return createView(controller, leader, seq, viewNum, decisions, quorum, vs)
+		}, bft.Phase(bft.COMMITTED))
+	controller.ProposerBuilder = pb
+
+	deliverCalled := make(chan struct{})
+	app.On("Deliver", mock.Anything, mock.Anything).Run(func(mock.Arguments) {
+		close(deliverCalled)
+	}).Return(types.Reconfig{})
+
+	controller.Start(1, 0, 0, false)
+	defer controller.Stop()
+
+	assert.Equal(t, startedView{view: 1, decisions: 0}, nextStartedView(t, started))
+
+	controller.ViewChanged(2, 1)
+	assert.Equal(t, startedView{view: 2, decisions: 0}, nextStartedView(t, started))
+
+	// View 1 decides while its own abort channel is already closed: the decision lands in
+	// the buffer and the deciding goroutine walks away without waiting for an answer.
+	decided := make(chan struct{})
+	go func() {
+		controller.Decide(types.Proposal{
+			Metadata: bft.MarshalOrPanic(&protos.ViewMetadata{ViewId: 1, LatestSequence: 1}),
+		}, nil, nil)
+		close(decided)
+	}()
+
+	select {
+	case <-decided:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Decide did not return although the view it decided in was aborted")
+	}
+
+	close(holdView2) // let view 2 start; the run loop then picks up the buffered decision
+
+	select {
+	case <-deliverCalled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the decision was never delivered")
+	}
+
+	// The run loop is sequential, so anything decide does with the stale decision happens
+	// before this view change: the next view started must be view 3 with a fresh counter.
+	controller.ViewChanged(3, 5)
+	assert.Equal(t, startedView{view: 3, decisions: 0}, nextStartedView(t, started),
+		"decide applied the aborted view's decision count to the view that replaced it")
+}
