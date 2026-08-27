@@ -471,7 +471,8 @@ func (c *Controller) AbortView(view uint64) {
 	select {
 	case c.abortViewChan <- view:
 	case <-c.stopChan:
-		// The run loop is gone, so nobody will ever take this off the channel.
+		// The controller is closing - the run loop may still be turning, but the view
+		// this asks about is going down with it either way.
 	}
 }
 
@@ -485,7 +486,8 @@ func (c *Controller) ViewChanged(newViewNumber uint64, newProposalSequence uint6
 	select {
 	case c.viewChange <- viewInfo{proposalSeq: newProposalSequence, viewNumber: newViewNumber}:
 	case <-c.stopChan:
-		// The run loop is gone, so nobody will ever take this off the channel.
+		// The controller is closing - the run loop may still be turning, but it will not
+		// be starting any more views.
 	}
 }
 
