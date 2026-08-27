@@ -488,8 +488,8 @@ func (c *Controller) ViewChanged(newViewNumber uint64, newProposalSequence uint6
 	select {
 	case c.viewChange <- viewInfo{proposalSeq: newProposalSequence, viewNumber: newViewNumber}:
 	case <-c.stopChan:
-		// The controller is closing - the run loop may still be turning, but it will not
-		// be starting any more views.
+		// The controller is closing - the run loop may still start views, but its exit defer
+		// aborts whatever is current, so the view this asks for would not outlive it either.
 	}
 }
 
