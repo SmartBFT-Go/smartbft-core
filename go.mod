@@ -6,7 +6,7 @@ require (
 	github.com/SmartBFT-Go/canonical v0.2.0
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.28.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 	google.golang.org/protobuf v1.36.11
 )
 
