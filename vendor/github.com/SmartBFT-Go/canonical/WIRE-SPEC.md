@@ -22,6 +22,23 @@ implementation is conformant iff it reproduces every vector in that file: for ea
 `vectors`, the DER hex in `der` and its SHA-256 in `sha256`; for each entry in `merkle`, the
 32-byte digest in `hash`.
 
+1.4.1 An entry in `vectors` carries `name`, `structure`, `fields`, `der`, `sha256` and
+`annotation`. **`fields` is normative**: it is the value `der` MUST decode to, and an
+implementation that reproduces `der` without agreeing with `fields` has reproduced a hex string
+rather than a structure. Its representation is fixed — a byte string is lowercase hex with no
+separator, an INTEGER is a JSON number, a `SEQUENCE OF` is a JSON array, and an element type is a
+JSON object keyed by field name. `structure` names the §3 subsection the entry encodes.
+
+1.4.2 `fields` MAY also carry a value that is **not** a field of the structure, where a verifier
+needs it and the wire does not transmit it. There are exactly two, both on a `SignedBlobV1` entry:
+`GenesisDigest` and `PubKey`, which §3.9.1 says the verifier supplies from its own genesis rather
+than reads from the blob. An implementation MUST NOT treat either as a decoded field. A key that
+is neither a field of `structure` nor one of these two is an error in the annex.
+
+1.4.3 An entry in `merkle` carries `name`, `fn`, `treeID`, `depth`, `hash` and the inputs `fn`
+names: `key` and `val` for a leaf, `left` and `right` for an internal node, neither for an empty
+one.
+
 1.5 The `annotation` arrays in the annex are informative, not normative. They exist so a vector
 can be reviewed in a diff without decoding hex by hand.
 
@@ -45,7 +62,7 @@ particular encoder. A conformant implementation MUST restrict itself to the same
 | 64-bit signed integer | INTEGER | `02 <len> <minimal signed big-endian>` |
 | boolean | BOOLEAN | `01 01 00` false, `01 01 ff` true |
 | nested structure | SEQUENCE | `30 <len> <fields in declaration order>` |
-| homogeneous list | SEQUENCE OF | `30 <len> <elements>` — the producer MUST sort deterministically before encoding |
+| homogeneous list | SEQUENCE OF | `30 <len> <elements>` — the producer MUST sort deterministically before encoding. Two structures carve out an exception and each says why: §3.7.4 and §3.11.3 |
 
 2.3 Banned, with the reason for each ban:
 
@@ -72,6 +89,19 @@ length 256..65535  long form, 0x82 + 2 bytes: 82 01 00      = 256
 `81 80` is the only valid encoding of length 128. `82 00 80` MUST be rejected. Indefinite length
 (`80` … `00 00`) MUST be rejected.
 
+2.4.1 The long form is the general DER one and is not limited to the three rows above: `0x8n`
+introduces `n` length octets. Two rules make it unambiguous and both MUST be enforced — the first
+length octet MUST NOT be zero, and the encoded value MUST NOT fit a shorter form, so `82 00 80` and
+`82 00 2b` are both rejected for the second reason as well as the first. `0xff` is reserved by
+X.690 and MUST be rejected.
+
+2.4.2 An implementation MAY refuse a length beyond a ceiling rather than allocate against it, and
+that ceiling MUST be documented. The reference implementation's is 2^23 bytes;
+`ci/verify_vectors.py` refuses more than four length octets. Two implementations disagreeing about
+where the ceiling sits disagree about the set of accepted inputs, which §4.2.2 says is exactly
+where an attacker works — so it is a stated property, not a private choice. Nothing this system
+encodes comes near either bound.
+
 2.5 INTEGER content MUST be minimal two's-complement big-endian, and INTEGER is **signed**:
 
 ```
@@ -82,7 +112,8 @@ length 256..65535  long form, 0x82 + 2 bytes: 82 01 00      = 256
 2^63-1 -> 02 08 7fffffffffffffff
 ```
 
-`02 02 00 01` (non-minimal 1) MUST be rejected.
+`02 02 00 01` (non-minimal 1) MUST be rejected. INTEGER content MUST be at least one octet:
+`02 00` is not the encoding of any value, 0 included.
 
 2.6 An empty byte string encodes to `04 00`. A conformant implementation MUST NOT attempt to
 distinguish an absent byte string from an empty one — the encoding cannot express the
@@ -137,8 +168,8 @@ Annotated breakdown of vector `proposal/v0/smartbft-reference`:
    02 01 07                          INTEGER 7                 VerificationSequence
 ```
 
-3.2.1 **`ProposalV0` has no `Version` field.** It is the single allowlisted exception to §4.1. The
-structure mirrors an encoding that already shipped in SmartBFT; adding a `Version` field would
+3.2.1 **`ProposalV0` has no `Version` field.** It is an allowlisted exception to §4.1, which lists
+them all. The structure mirrors an encoding that already shipped in SmartBFT; adding a `Version` field would
 change every digest the consensus library has ever produced. The `V0` in the name is the version
 tag, carried out of band.
 
@@ -168,12 +199,538 @@ values above 2^63-1 at construction. They are all far below that bound in practi
 plain INTEGER on the wire and avoids the arbitrary-precision encoding a true unsigned 64-bit
 value would need.
 
+### 3.6 `GenesisV1`
+
+The pinned cluster definition. Its digest is §3.4's default — `SHA-256` over the complete DER —
+and that digest is the value an operator distributes out of band for every node to check its own
+copy against. The encoding is therefore frozen on the same terms as §3.1.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Version` | INTEGER | MUST equal 1 for v1. §4.1 applies. |
+| 2 | `TrustDomain` | OCTET STRING | The SPIFFE trust domain, e.g. `cluster.example`. MUST be non-empty. |
+| 3 | `CARoot` | OCTET STRING | DER of the root certificate. Opaque to this layer. |
+| 4 | `MaxNodes` | INTEGER | 64-bit signed. MUST be ≥ 0, and MUST be ≥ the number of members. |
+| 5 | `Members` | SEQUENCE OF `GenesisMemberV1` | Sorted strictly ascending by `NodeID`. |
+
+`GenesisMemberV1`, the element type of `Members`:
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `NodeID` | INTEGER | 64-bit signed, logically unsigned per §3.5. MUST be ≥ 0. |
+| 2 | `SpiffeID` | OCTET STRING | MUST equal `spiffe://<TrustDomain>/node/<NodeID>` byte for byte, with this structure's `TrustDomain` and the member's own `NodeID` in decimal without leading zeros. See §3.6.6. |
+| 3 | `LeafPubKey` | OCTET STRING | MUST be exactly 32 bytes: an Ed25519 public key. |
+
+Annotated breakdown of vector `genesis/v1/long-form-length`:
+
+```
+30 81 cc                              SEQUENCE, 204 bytes — long form: 81 says one length byte follows
+   02 01 01                           INTEGER 1                Version
+   04 0f 636c…6c65                    OCTET STRING, 15 bytes   TrustDomain "cluster.example"
+   04 20 ca*32                        OCTET STRING, 32 bytes   CARoot
+   02 01 0a                           INTEGER 10               MaxNodes
+   30 81 90                           SEQUENCE OF, 144 bytes   Members — two members already cross 127
+      30 46                           SEQUENCE, 70 bytes       Members[0]
+         02 01 01                     INTEGER 1                NodeID
+         04 1f 7370…2f31              OCTET STRING, 31 bytes   SpiffeID "spiffe://cluster.example/node/1"
+         04 20 b2*32                  OCTET STRING, 32 bytes   LeafPubKey
+      30 46                           SEQUENCE, 70 bytes       Members[1]
+         02 01 02                     INTEGER 2                NodeID
+         04 1f 7370…2f32              OCTET STRING, 31 bytes   SpiffeID "spiffe://cluster.example/node/2"
+         04 20 c3*32                  OCTET STRING, 32 bytes   LeafPubKey
+```
+
+3.6.1 **`GenesisMemberV1` has no `Version` field.** It is an element of `Members` and never
+appears on the wire alone, so §4.1 — which binds top-level structures — is satisfied by the
+`Version` of the containing `GenesisV1`. A change to the member layout produces a new version of
+`GenesisV1`, not a version field on the member.
+
+3.6.2 `Members` is a SEQUENCE OF under §2.2, so **the producer sorts and the producer alone**. A
+conformant encoder MUST reject an unsorted or duplicated set rather than sort it, and a decoder
+MUST reject one too. Sorting on behalf of the caller would give one membership two spellings, and
+only one of them hashes to the digest the operator pinned.
+
+3.6.3 Every constraint in the two tables is checked on encode **and** on decode. The asymmetric
+alternative — validate on the way out, trust on the way in — accepts bytes this specification says
+cannot exist, and those bytes have digests of their own.
+
+3.6.4 An empty `Members` encodes as `30 00`. Per §2.6 there is no way to distinguish it from an
+absent one, and none is needed: a cluster with no members is expressible and is pinned by vector
+`genesis/v1/no-members`.
+
+3.6.5 `MaxNodes` is the cluster's reconfiguration ceiling, not its current size. It is carried in
+genesis because it bounds the member count at every later reconfiguration, and a bound that is not
+covered by the pinned digest is a bound an operator can move.
+
+3.6.6 `SpiffeID` is **derived, not merely shaped**. Both of its variable parts are fields of this
+same structure, so each member has exactly one legal identity: an implementation computes the
+value and compares, rather than parsing whatever it was handed. Accepting a member whose
+`SpiffeID` names a different node or a foreign trust domain would put two identities for one node
+under the pinned digest, and the identity is what the leaf certificate is later checked against.
+`CARoot` is the only cell in either table with no constraint on its content — §3.6's table calls it
+opaque, this layer does not interpret certificates, and it stays exempt.
+
+### 3.7 `SignatureSetV0`
+
+The commit signatures of the previous decision, hashed into
+`ViewMetadata.PrevCommitSignatureDigest`. The digest is §3.4's default — `SHA-256` over the
+complete DER — and every replica recomputes it over the signatures it received from the leader
+and compares. These bytes have been in ledgers since before this document existed; §3.7.3 says
+what that means.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Sigs` | SEQUENCE OF `SignerSigV0` | Producer order, **not** sorted. See §3.7.4. |
+
+`SignerSigV0`, the element type of `Sigs`:
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Signer` | INTEGER | 64-bit signed, logically unsigned per §3.5. The node identifier. |
+| 2 | `Value` | OCTET STRING | The signature bytes. Opaque to this layer, and may be empty. |
+| 3 | `Msg` | OCTET STRING | The auxiliary message the signature covers. Opaque, and may be empty. |
+
+Annotated breakdown of vector `sigset/v0/three-signers`:
+
+```
+30 26                       SEQUENCE, 38 bytes
+   30 24                    SEQUENCE OF, 36 bytes    Sigs
+      30 0b                 SEQUENCE, 11 bytes       Sigs[0]
+         02 01 01           INTEGER 1                Signer
+         04 02 56 31        OCTET STRING "V1"        Value
+         04 02 4d 31        OCTET STRING "M1"        Msg
+      30 07                 SEQUENCE, 7 bytes        Sigs[1]
+         02 01 02           INTEGER 2                Signer
+         04 00              OCTET STRING, 0 bytes    Value
+         04 00              OCTET STRING, 0 bytes    Msg
+      30 0c                 SEQUENCE, 12 bytes       Sigs[2]
+         02 02 01 2c        INTEGER 300              Signer
+         04 02 56 33        OCTET STRING "V3"        Value
+         04 02 4d 33        OCTET STRING "M3"        Msg
+```
+
+3.7.1 **Neither structure has a `Version` field.** Both are allowlisted exceptions to §4.1, on the
+same grounds as §3.2.1: they reproduce an encoding SmartBFT already shipped, and adding a
+`Version` field would change every `PrevCommitSignatureDigest` already written to a ledger. The
+`V0` in the name is the version tag, carried out of band. `SignerSigV0` would additionally
+qualify under the §3.6.1 rule — it is an element of a SEQUENCE OF and never appears on the wire
+alone.
+
+3.7.2 Field order is declaration order, inherited from SmartBFT's internal `IntDoubleByte` and
+`IntDoubleBytes`. Those two types are what the pre-migration implementation marshalled, and this
+section is a transcription of their layout, not a redesign of it.
+
+3.7.3 This section and the `sigset/v0/*` vectors are a **documentation backfill**. The encoding
+shipped without them; no byte changes here, so §1.3 does not apply and the release carrying this
+section is additive. The two non-empty vectors record digests produced by the unmodified
+pre-migration implementation for those inputs, which is why they can be checked against something
+other than this package's own output.
+
+3.7.4 `Sigs` is a SEQUENCE OF but is **not** sorted, so it does not meet §2.2's sort requirement.
+The order is the producer's, it is carried alongside the signatures themselves, and the verifier
+recomputes the digest over the list in the order it received it — the same signatures in another
+order are a different digest. Recorded as an exception, not defended as a design: a v1 structure
+carrying the same data would sort by `Signer` and reject duplicates.
+
+3.7.5 An empty `Sigs` encodes as `30 02 30 00` and is pinned by vector `sigset/v0/empty`. SmartBFT
+returns a nil digest for an empty signature set without reaching the encoder, so those bytes are
+not hashed in practice; the vector exists so that an implementer does not have to guess.
+
+### 3.8 `SignedV1`
+
+The signature envelope. **Every Ed25519 signature in this system is a signature over the DER of a
+`SignedV1` and nothing else** — commit signatures, the consensus library's opaque `Sign`, client
+requests and read-index attestations alike. There is no second signing format and no carve-out,
+so an implementer has one structure to reproduce and adding a signature kind later costs a value
+in §3.8.1 rather than a new encoding.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Version` | INTEGER | MUST equal 1 for v1. §4.1 applies. |
+| 2 | `Purpose` | INTEGER | MUST be one of the four values in §3.8.1. Every other value, including 0 and 5, MUST be rejected. |
+| 3 | `GenesisDigest` | OCTET STRING | MUST be exactly 32 bytes: the digest of the cluster's `GenesisV1` under §3.4. |
+| 4 | `Payload` | OCTET STRING | The purpose's own structure, DER. See §3.8.5. MAY be empty. |
+
+Annotated breakdown of vector `signed/v1/commit`:
+
+```
+30 31                           SEQUENCE, 49 bytes
+   02 01 01                     INTEGER 1                 Version
+   02 01 01                     INTEGER 1                 Purpose — commit signature
+   04 20 6f01…dc56              OCTET STRING, 32 bytes    GenesisDigest (SHA-256 of genesis/v1/n4)
+   04 07 5041594c4f4144         OCTET STRING "PAYLOAD"    Payload — opaque at this layer
+```
+
+3.8.1 The purpose values are **frozen**:
+
+| Value | Purpose | What it covers |
+|---|---|---|
+| 1 | commit signature | A consenter's signature on a proposal. `Payload` is §3.10. |
+| 2 | opaque sign | The consensus library's general-purpose `Sign`, including view-change `RawViewData`. `Payload` is the argument as handed in. |
+| 3 | client request | A client's signature on its own request. `Payload` is §3.11. |
+| 4 | read-index attestation | A replica's attestation over `(view, seq, nonce)`. `Payload` is §3.12. |
+
+Adding a value is additive under §7 and requires a new annex vector. Changing or reusing a value
+is a breaking change under §1.3, and a worse one than most: it does not merely stop new signatures
+verifying, it makes old ones verify under a purpose their signer never intended.
+
+3.8.2 A verifier MUST check `Purpose` and `GenesisDigest` **before** it checks the signature. A
+signature made for another purpose or another cluster is then rejected on structure rather than on
+cryptography, which is a cheaper rejection and a clearer one — the reason is a field, not a failed
+curve operation.
+
+3.8.3 `Purpose` is inside the signed bytes, so two envelopes differing only in `Purpose` are two
+different byte strings with two unrelated digests. That is what makes a captured commit signature
+useless as a read-index attestation: the attestation verifier reconstructs an envelope carrying
+purpose 4, and no signature over purpose 1 covers those bytes. Vectors `signed/v1/commit`,
+`signed/v1/opaque`, `signed/v1/client-request` and `signed/v1/read-index` carry one payload under
+all four purposes and pin exactly this.
+
+3.8.4 `GenesisDigest` is inside the signed bytes for the same reason, one scope up: a signature
+minted in one cluster covers bytes no other cluster reconstructs, so a test cluster's signature
+replayed against production is not a signature at all. It costs 32 bytes per signature and it
+makes "which cluster is this for" answerable from the bytes alone. The digest is supplied by the
+verifier and never transmitted — see §3.9.1.
+
+3.8.5 `Payload` is the purpose's own structure, DER-encoded, and opaque at this layer. Purpose 1
+carries §3.10. Purpose 2 carries whatever the caller handed to `Sign` and this document does not
+constrain it. Purpose 3 carries §3.11 and purpose 4 carries §3.12.
+
+**The mapping binds the producer of an envelope and the verifier of that purpose. It does not bind
+this layer**: an encoder or decoder of `SignedV1` MUST NOT parse `Payload`, whatever the purpose.
+Purpose 2 settles the point by itself — no encoder can validate an argument this document declines
+to constrain — and the alternative puts four structure parsers inside one encoder. Annex vectors
+`signed/v1/commit`, `signed/v1/opaque`, `signed/v1/client-request`, `signed/v1/read-index` and
+`signed/v1/long-form-length` accordingly carry a deliberately opaque `Payload`: they exercise the
+envelope's own encoding and §3.8.3's purpose separation, and they are not examples of a
+well-formed system envelope. `blob/v1/basic` and `blob/v1/signed-by-test-key` are, because §3.9's
+table requires a real payload.
+
+3.8.6 Every constraint in the table is checked on encode **and** on decode, on §3.6.3's grounds. A
+verifier reconstructs this envelope rather than receiving it, so what it reconstructs must be
+something a signer could have emitted.
+
+### 3.9 `SignedBlobV1`
+
+A signature travelling beside the payload it was made over. This is a transport structure, not a
+signed one: it is never itself signed, and `Value` is a signature over the §3.8 envelope
+reconstructed from its other fields.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Version` | INTEGER | MUST equal 1 for v1. §4.1 applies. |
+| 2 | `Purpose` | INTEGER | MUST be one of the four values in §3.8.1. |
+| 3 | `Payload` | OCTET STRING | The purpose's own structure, DER. MUST be non-empty. |
+| 4 | `Value` | OCTET STRING | MUST be exactly 64 bytes: an Ed25519 signature. |
+
+Annotated breakdown of vector `blob/v1/basic`:
+
+```
+30 76                           SEQUENCE, 118 bytes
+   02 01 01                     INTEGER 1                 Version
+   02 01 01                     INTEGER 1                 Purpose — commit signature
+   04 2c 302a…4155 58           OCTET STRING, 44 bytes    Payload (commit-payload/v1/with-aux)
+   04 40 0001…3e3f              OCTET STRING, 64 bytes    Value
+```
+
+3.9.1 **The envelope is reconstructed, never transmitted.** There is no `GenesisDigest` field
+here, and adding one would be a mistake rather than a convenience. A verifier MUST build
+`SignedV1{1, Purpose, <its own genesis digest>, Payload}`, marshal it under §3.8, and verify
+`Value` over exactly those bytes. A signature minted against another cluster therefore does not
+carry a wrong digest that some check has to catch — it covers bytes this verifier never produces,
+and there is no field in the blob for an attacker to set. Vector `blob/v1/basic` records the
+reconstructed envelope and its digest in its annotation so the rule is exhibited and not only
+asserted.
+
+3.9.2 The rule is also the only one that works everywhere. On the consensus path the signature
+travels in the consensus library's own `Signature.Msg`, which carries the payload and has nowhere
+to put an envelope. Reconstruction covers that case and the blob case with one convention, so §3.8
+keeps its "no exceptions".
+
+3.9.3 **There is no signer field.** Every payload names its own signer — a client request by
+carrying its certificate, a read-index attestation by carrying its signer identifier, a consenter
+signature by the node identifier the consensus library already transports. A signer named beside a
+signature rather than inside the signed bytes can be rewritten by whoever relays it, which turns
+an identifier into a suggestion. This is the same rule as §3.6.6 and the same rule the transport
+layer applies to node identity: identity comes from something verified, never from a field
+alongside it.
+
+3.9.4 `Payload` MUST be non-empty. An envelope over nothing is a signature every purpose would
+have to reject on its own terms, and rejecting it once here keeps that check out of four
+verifiers.
+
+3.9.5 Every constraint in the table is checked on encode **and** on decode, on §3.6.3's grounds —
+`Payload`'s content excepted, per §3.9.6.
+
+3.9.6 **`Payload` MUST be the DER of the structure §3.8.5 maps to `Purpose`**, purpose 2 excepted
+because §3.8.5 leaves it unconstrained. Unlike §3.8.5's envelope a blob always carries a real
+payload, so the rule is checkable here — but it binds the producer, and a decoder of the container
+is no more required to parse `Payload` than §3.8.5's is. A conformance checker over the annex
+SHOULD check it, and `ci/verify_vectors.py` does: `blob/v1/basic` decodes as the `CommitPayloadV1`
+purpose 1 names, and `blob/v1/signed-by-test-key` as the `ReadIndexV1` purpose 4 names.
+
+### 3.10 `CommitPayloadV1`
+
+`SignedV1.Payload` under purpose 1. It is what a consenter's signature on a proposal actually
+covers.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Version` | INTEGER | MUST equal 1 for v1. §4.1 applies. |
+| 2 | `ProposalDigest` | OCTET STRING | MUST be exactly 32 bytes: the digest of the proposal under §3.2.3. |
+| 3 | `Aux` | OCTET STRING | The consensus library's auxiliary input, relayed verbatim. Opaque to this layer, and MAY be empty. |
+
+Annotated breakdown of vector `commit-payload/v1/with-aux`:
+
+```
+30 2a                           SEQUENCE, 42 bytes
+   02 01 01                     INTEGER 1                 Version
+   04 20 35d8…7522              OCTET STRING, 32 bytes    ProposalDigest (SHA-256 of proposal/v0/smartbft-reference)
+   04 03 415558                 OCTET STRING "AUX"        Aux
+```
+
+3.10.1 **The proposal digest and the auxiliary data are in one structure on purpose.** A signature
+over the digest alone leaves the aux unsigned, so whoever relays the signature can pair it with an
+aux of their choosing; a signature over the aux alone can be lifted onto another proposal. Binding
+both under one signature makes a consenter signature non-transplantable in either direction.
+Vectors `commit-payload/v1/with-aux` and `commit-payload/v1/empty-aux` name one proposal and
+differ only in the aux, and they hash to unrelated digests.
+
+3.10.2 `Aux` is opaque here. This layer does not parse it, does not constrain its contents, and
+does not require it to be present — the aux feeds consensus bookkeeping, and what that bookkeeping
+does with malformed contents is that layer's obligation, not this one's.
+
+3.10.3 There is no signer field, on §3.9.3's grounds: the consensus library already transports the
+node identifier alongside the signature.
+
+3.10.4 Every constraint in the table is checked on encode **and** on decode, on §3.6.3's grounds.
+
+### 3.11 `ClientRequestV1`
+
+`SignedV1.Payload` under purpose 3, and the structure a non-Go client has to produce. It is
+**self-contained**: verifying it needs these bytes and the genesis CA root, nothing else.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Version` | INTEGER | MUST equal 1 for v1. §4.1 applies. |
+| 2 | `ClientCert` | OCTET STRING | DER of the client's leaf certificate. MUST be non-empty. |
+| 3 | `Intermediates` | SEQUENCE OF `CertificateV1` | Ordered leaf-ward to root-ward. MAY be empty; see §3.11.2. |
+| 4 | `RequestID` | OCTET STRING | MUST be exactly 16 bytes. See §3.11.1. |
+| 5 | `Expiry` | INTEGER | Unix nanoseconds. MUST be strictly positive. See §3.11.4. |
+| 6 | `Payload` | OCTET STRING | The application request. Opaque at this layer, and MAY be empty. |
+
+`CertificateV1`, the element type of `Intermediates`:
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `DER` | OCTET STRING | DER of one certificate. MUST be non-empty. |
+
+Annotated breakdown of vector `client-request/v1/no-intermediates`:
+
+```
+30 37                           SEQUENCE, 55 bytes
+   02 01 01                     INTEGER 1                Version
+   04 0b 434c…4146              OCTET STRING, 11 bytes   ClientCert — DER of the client leaf
+   30 00                        SEQUENCE OF, 0 bytes     Intermediates — absent chain
+   04 10 0001…0e0f              OCTET STRING, 16 bytes   RequestID
+   02 08 18867251edfa0000       INTEGER 1767225600000000000   Expiry — Unix nanoseconds
+   04 07 5041594c4f4144         OCTET STRING "PAYLOAD"   Payload — the application request
+```
+
+3.11.1 **`RequestID` MUST be exactly 16 bytes**, on encode and on decode. This is not a size hint.
+The consensus library identifies a request by the unescaped concatenation of its client identifier
+and its ID, so a variable-width ID lets one client spell an ID that lands inside another client's
+namespace and collides two distinct requests in the pool. A fixed width removes the ambiguity at
+the encoding layer, where no verifier has to remember to check it.
+
+3.11.2 **An absent chain and an empty chain are one value**, encoded as the empty SEQUENCE OF
+`30 00`. `OPTIONAL` is banned by §2.3, so there is no third spelling and §2.6 applies: an
+implementation MUST NOT attempt to distinguish absent from empty. A decoder MAY produce either an
+empty list or a null list in its own language — Go's `encoding/asn1` allocates an empty non-nil
+slice — and what MUST hold is that re-encoding the decoded value reproduces the bytes the
+signature was made over.
+
+3.11.3 **`Intermediates` is ordered, and the order is inside the signed bytes.** Leaf-ward first,
+root-ward last. It is a SEQUENCE OF but §2.2's producer-sorts rule does not apply: the order is
+the chain itself and carries meaning, so there is nothing to sort it by. Two requests with the
+same certificates in two orders are two different byte strings with two unrelated digests, which
+is what stops a relay from reordering the chain and keeping the signature.
+
+3.11.4 **The client's identity is derived from `ClientCert`, never from the payload.** There is
+deliberately no `ClientID` field. A verifier chains `ClientCert` through `Intermediates` to the CA
+root pinned in `GenesisV1`, and the client's identity is the SPIFFE ID of that verified
+certificate. This is §3.9.3's rule and the transport layer's rule: identity comes from something
+verified, never from a field alongside it.
+
+3.11.5 **`Expiry` is compared against the committed `ConsensusTime` of the proposal header, never
+against a local clock.** §6 explains why: two replicas checking the same request against two local
+clocks reach two verdicts on the same bytes, and that is divergence rather than rejection. A
+non-positive `Expiry` is rejected here because no `ConsensusTime` admits it, which makes it
+malformed rather than merely expired. The ceiling on how far ahead an expiry may sit is a cluster
+policy and is specified outside this document.
+
+3.11.6 **`ClientCert` is carried, not fingerprinted.** The request costs several hundred bytes
+more for it, and the reason is determinism: a replica catching up by state transfer, or replaying
+a decision it never witnessed live, verifies from the request bytes alone and reaches the verdict
+a replica that saw it live reached. A fingerprint plus a local certificate cache cannot promise
+that, because the caches differ.
+
+3.11.7 **`CertificateV1` has no `Version` field.** It is an allowlisted exception to §4.1 on
+§3.6.1's grounds: it is an element of a SEQUENCE OF, it never appears on the wire alone, and the
+containing `ClientRequestV1.Version` already governs its layout. It exists as a structure at all
+because the type profile of §2.2 has no slice-of-slices, so a chain of DER blobs needs a named
+element type.
+
+3.11.8 Every constraint in the two tables is checked on encode **and** on decode, on §3.6.3's
+grounds.
+
+### 3.12 `ReadIndexV1`
+
+`SignedV1.Payload` under purpose 4. A replica's attestation that its state is at `(View, Seq)`,
+answering a client's freshness challenge.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Version` | INTEGER | MUST equal 1 for v1. §4.1 applies. |
+| 2 | `SignerID` | INTEGER | The attesting replica's node identifier. MUST be strictly positive. |
+| 3 | `View` | INTEGER | MUST be non-negative. |
+| 4 | `Seq` | INTEGER | MUST be non-negative. 64-bit; see §3.5. |
+| 5 | `Nonce` | OCTET STRING | MUST be exactly 16 bytes, chosen by the client. |
+
+Annotated breakdown of vector `read-index/v1/basic`:
+
+```
+30 1e                           SEQUENCE, 30 bytes
+   02 01 01                     INTEGER 1                Version
+   02 01 03                     INTEGER 3                SignerID — node 3
+   02 01 07                     INTEGER 7                View
+   02 01 2a                     INTEGER 42               Seq
+   04 10 a7*16                  OCTET STRING, 16 bytes   Nonce — client chosen
+```
+
+3.12.1 **`SignerID` is inside the signed bytes.** An attestation names its own signer, so it
+cannot be re-attributed by whoever relays it: a signature made by node 3 covers bytes that say
+node 3, and rewriting the field invalidates it. This is why the structure carries a signer where
+§3.9.3 says the envelope must not — the difference is whether the identifier is under the
+signature or beside it.
+
+3.12.2 **`Nonce` is the client's freshness challenge and its width is fixed, not bounded.** A
+client that accepts a short nonce accepts a narrower challenge, and how narrow is then the
+attacker's choice. Sixteen bytes on both encode and decode removes the choice.
+
+3.12.3 `SignerID` MUST be strictly positive: 0 is the consensus library's "no node", so an
+attestation carrying it names nobody. A negative `View` or `Seq` is out of range per §3.5 —
+both are logically unsigned and carried in a signed INTEGER.
+
+3.12.4 Vector `read-index/v1/high-seq` carries a `Seq` past 2^32 specifically so that an
+implementation parsing INTEGER into a 32-bit type fails on it rather than silently attesting to a
+truncated sequence.
+
+3.12.5 Every constraint in the table is checked on encode **and** on decode, on §3.6.3's grounds.
+
+### 3.13 `CommitCertificateV1`
+
+What a client checks to know a proposal was decided, holding nothing but genesis. It is a
+**container**: it is never itself signed, and no purpose value carries it.
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Version` | INTEGER | MUST equal 1 for v1. §4.1 applies. |
+| 2 | `ProposalDigest` | OCTET STRING | MUST be exactly 32 bytes: the digest of the proposal under §3.2.3. |
+| 3 | `View` | INTEGER | MUST be non-negative. |
+| 4 | `Seq` | INTEGER | MUST be non-negative. |
+| 5 | `Sigs` | SEQUENCE OF `SignerSigV0` | MUST be non-empty and strictly ascending by `Signer`. See §3.13.2. |
+
+`Sigs` reuses `SignerSigV0` from §3.7 rather than declaring a fourth spelling of "a signature with
+a signer attached". Within this structure its two byte fields are constrained where §3.7 leaves
+them open:
+
+| # | Field | ASN.1 | Constraints |
+|---|---|---|---|
+| 1 | `Signer` | INTEGER | The consenter's node identifier. |
+| 2 | `Value` | OCTET STRING | MUST be exactly 64 bytes: an Ed25519 signature. See §3.13.1. |
+| 3 | `Msg` | OCTET STRING | The `CommitPayloadV1` of §3.10, DER. MUST be non-empty. Opaque to this layer; see §3.13.7. |
+
+Annotated breakdown of vector `commit-cert/v1/n4-q3`:
+
+```
+30 82 01 8e                     SEQUENCE, 398 bytes
+   02 01 01                     INTEGER 1                Version
+   04 20 35d8…7522              OCTET STRING, 32 bytes   ProposalDigest (SHA-256 of proposal/v0/smartbft-reference)
+   02 01 07                     INTEGER 7                View
+   02 01 2a                     INTEGER 42               Seq
+   30 82 01 5f                  SEQUENCE OF, 351 bytes   Sigs, ascending by Signer
+      30 73                     SEQUENCE, 115 bytes      Sigs[0]
+         02 01 01               INTEGER 1                Signer
+         04 40 a1*64            OCTET STRING, 64 bytes   Value
+         04 2c 302a…5558        OCTET STRING, 44 bytes   Msg — commit-payload/v1/with-aux
+      30 73 … 02 01 02 …                                 Sigs[1], signer 2
+      30 73 … 02 01 03 …                                 Sigs[2], signer 3
+```
+
+3.13.1 **What `Value` covers, in full, because a client implementing from this document has no
+other way to learn it.** `Msg` is the DER of a `CommitPayloadV1` (§3.10). The verifier
+reconstructs `SignedV1{Version: 1, Purpose: 1, GenesisDigest: <its own>, Payload: Msg}` (§3.8),
+marshals it, and verifies `Value` as an Ed25519 signature over exactly those bytes under the
+signer's pinned public key from `GenesisV1`. The envelope is never transmitted, here or anywhere;
+this is §3.9.1's rule applied to a structure that carries several signatures instead of one. A
+client MUST also check that the `ProposalDigest` inside each `Msg` equals the certificate's own
+`ProposalDigest`, or the container's digest is decorative. That check is the client's, not the
+container's; §3.13.7 says why.
+
+3.13.2 **`Sigs` is strictly ascending by `Signer`, and duplicates are rejected — on encode and on
+decode.** This is §2.2's producer-sorts rule with no exception, which is the opposite of §3.7.4.
+The difference is deliberate and worth stating: `SignatureSetV0.Sigs` is unsorted because its
+digest is order-dependent and every ledger already holds digests over the leader's order, so
+sorting it now would be a breaking change. `CommitCertificateV1` is new, nothing stored depends on
+its order, and a client that accepts an unsorted certificate accepts two byte strings for one
+decision. Rejecting on both sides is what makes the second spelling unreachable.
+
+3.13.3 **The signature threshold is not in this document.** How many entries a client must require
+is a property of the cluster size and the fault model, it lives with the quorum arithmetic, and
+this layer does not enforce it. A specification that stated a threshold it does not check would be
+a claim an implementer could rely on and a verifier would not honour. What this layer guarantees
+is that the entries are well-formed, unique and ordered; counting them against a quorum is the
+verifier's obligation.
+
+3.13.4 **This layer does not map `Signer` to a member.** It does not check that a signer appears in
+`GenesisV1`, and it does not constrain `Signer`'s range beyond what §3.5 says about INTEGER —
+`SignerSigV0` is a frozen v0 element type and §3.7 leaves its fields open. Resolving a signer to a
+pinned public key is the verifying layer's work, and it is the same layer that applies §3.13.3's
+threshold.
+
+3.13.5 `Msg` MUST be non-empty, on §3.9.4's grounds: an entry with no signed message cannot be
+verified by anyone, so rejecting it once here keeps that check out of every client.
+
+3.13.6 Every constraint in the two tables is checked on encode **and** on decode, on §3.6.3's
+grounds — `Msg`'s content excepted, per §3.13.7.
+
+3.13.7 **`Msg` is not parsed by this layer.** It belongs to `SignerSigV0`, a frozen v0 element type
+whose `Msg` §3.7 leaves opaque and may leave empty, so §3.13 cannot tighten how it is *parsed*
+without changing what `SignatureSetV0` accepts. A producer MUST put a `CommitPayloadV1` there and a
+verifying client MUST read one and apply §3.13.1; an encoder and a decoder of the container check
+only that it is non-empty. Vector `commit-cert/v1/long-form-length` carries 300 opaque bytes in
+`Msg` deliberately, to pin the `04 82` length form on a primitive, and is therefore a certificate
+on which §3.13.1 cannot be performed. This is §3.8.5's division of labour, one structure over.
+
 ## 4. The two rules
 
 ### 4.1 V-RULE
 
 **Every top-level structure begins with `Version`, and every decoder MUST reject a version it
-does not know.** `ProposalV0` (§3.2.1) is the single exception.
+does not know.** The exceptions are exhaustively:
+
+| Structure | Why | Where |
+|---|---|---|
+| `ProposalV0` | Inherits SmartBFT's frozen proposal encoding | §3.2.1 |
+| `SignatureSetV0` | Inherits SmartBFT's frozen commit-signature encoding | §3.7.1 |
+| `SignerSigV0` | Element of `SignatureSetV0`; same frozen encoding | §3.7.1 |
+| `GenesisMemberV1` | Element of `GenesisV1`; the container's `Version` governs the layout | §3.6.1 |
+| `CertificateV1` | Element of `ClientRequestV1`; the container's `Version` governs the layout | §3.11.7 |
+
+The list is mirrored by `versionExempt` in `profile_test.go`, which fails the build for any
+exported structure not on it. Adding a row is a deliberate act with a recorded reason, and a new
+structure that fits neither category above does not get one.
 
 Attack prevented: a DER decoder that maps a SEQUENCE onto a fixed field list **silently discards
 trailing elements it was not expecting**. A v2 structure `{Root, Seq, Extra}` handed to a v1
@@ -198,11 +755,33 @@ the digest.
 
 An implementation MUST treat leftover bytes as a decode error, not as a warning.
 
+4.2.1 **The same rule binds inside the structure, at every nesting depth.** Bytes left after the
+outer SEQUENCE are only the outermost case of one malleability. A decoder that maps a SEQUENCE
+onto a fixed field list stops when the list runs out and reports *no* leftovers, because the
+surplus element sat inside that SEQUENCE's own length: `30 2e … 02 01 63` decodes to the same
+`Header` as `30 2b …`, hashes differently, and hands nothing back to the caller to complain
+about. The rule is therefore stated on the whole encoding: **an accepted input MUST be the exact
+byte string this specification encodes that value to.** Any other byte string decoding to the same
+value MUST be rejected, whichever SEQUENCE it hides in. The profile of §2 is what makes this
+statable — one value has one encoding — and the cheapest implementation of it is to re-encode
+what was just decoded and require the result to equal the input.
+
+4.2.2 This is a conformance requirement, not a Go implementation detail. An implementation that
+accepts a spliced encoding reproduces every vector in the annex and still disagrees with this one
+on the *set of accepted inputs*, which is precisely where an attacker works: one authorised value,
+two byte strings, two digests, two nodes that no longer agree. A non-Go implementation is
+conformant only if it rejects the same inputs, and §4.3 says how to derive them.
+
 ### 4.3 Both rules are pinned by the annex
 
 `TestVectorRules` takes each `Header` vector's real bytes, increments the `Version` content byte,
-and requires a version error; then appends `0xff` and requires a trailing-bytes error. A
-conformant implementation SHOULD run the same two derivations over the annex.
+and requires a version error; then appends `0xff` and requires a trailing-bytes error.
+`TestVectorsAreNotMalleable` takes every vector, walks every SEQUENCE at every depth, splices an
+unexpected `02 01 63` into it with the enclosing lengths recomputed, and requires a decode error
+for each — 4 forgeries for a two-member `GenesisV1`, one per SEQUENCE. A conformant implementation
+SHOULD run the same three derivations over the annex; they need no input beyond the file itself.
+`ci/verify_vectors.py` does, in Python and from this document rather than from the Go, and rejects
+121 forgeries across the 30 vectors.
 
 ## 5. Merkle node hashing
 
@@ -215,7 +794,7 @@ with SHA-256.
 |---|---|---|
 | prefix | 1 byte | see §5.2 |
 | `treeID` | 8 bytes | unsigned big-endian |
-| `depth` | 1 byte | unsigned |
+| `depth` | 1 byte | unsigned, so 0..255; a producer MUST reject a deeper node rather than let it wrap |
 | length prefix | 8 bytes | unsigned big-endian |
 | child digest | 32 bytes | raw, **no** length prefix — the width is fixed |
 
@@ -308,10 +887,26 @@ exactly that comparison and was wrong.
 one. A new leader after a view change inherits `p` from the log like everyone else, so it cannot
 move time backwards and there is nothing to deadlock on.
 
-6.5 Open parameter, to be decided in Phase 3: the value of `MAX_STEP`. Too large and §6.6 widens.
-Too small and an idle cluster stalls — after a gap longer than `MAX_STEP` an honest leader's true
-clock already exceeds `p + MAX_STEP`, so it must propose a stamp it knows to be stale or be
-rejected.
+6.5 **`MAX_STEP` = 10 seconds.** Decided here rather than left open: §7.1 makes a normative edit
+after this document is tagged a coordinated upgrade, so the parameter closes before the tag. The
+bound is two-sided and neither side is comfortable, so both are recorded.
+
+*Upper bound.* §6.6 lets a Byzantine leader place `ConsensusTime` anywhere in
+`(p, p + MAX_STEP]`, so `MAX_STEP` is precisely how far one decision can move agreed time. One
+decision must not be able to move it past a whole lease renewal interval. Kubernetes' kubelet
+renews its node `Lease` every 10 seconds; at `MAX_STEP = 10s` a single proposal cannot skip one.
+A consumer of this clock that renews faster than 10 seconds is outside what this value protects
+and needs a bound of its own.
+
+*Lower bound.* §6.2 admits `t ≤ p + MAX_STEP`, so an idle cluster recovers at most `MAX_STEP` of
+agreed time per decision. At one decision per second, agreed time catches up at ten times real
+time. Below roughly one decision per 10 seconds of real time it runs behind — silently, with no
+error anywhere, which is the limitation §6.6 states rather than a new one. A smaller `MAX_STEP`
+moves that threshold up to a decision rate a quiet cluster can plausibly sit under.
+
+The constant is enforced in bft-kv's `consensus` package at `VerifyProposal`, which is where §6
+already places the policy, and the drift of §6.6 is measured on a live cluster rather than
+asserted.
 
 6.6 Accepted limitation, stated rather than left implicit: a Byzantine leader can place
 `ConsensusTime` anywhere in `(p, p + MAX_STEP]`, and the skew compounds across decisions. Every
